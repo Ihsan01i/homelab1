@@ -22,9 +22,14 @@ networking, and self-hosted services.
 ## What's Running
 
 ### Dell G3 (192.168.1.31)
-- **Nginx Proxy Manager** — reverse proxy for all services (port 81)
-- **Uptime Kuma** — service monitoring dashboard (port 3001)
+- **Nginx Proxy Manager** — reverse proxy for all services (nginx.lan)
+- **Uptime Kuma** — service monitoring dashboard (uptime.lan)
+- **Portainer** — Docker container management (docker.lan)
+- **Pi-hole** — local DNS server and ad blocker (pi.lan)
 
 ## Progress Log
 - [2026-06-04] Installed Ubuntu Server on Dell G3, configured SSH access
 - [2026-06-04] Installed Docker, deployed Nginx Proxy Manager and Uptime Kuma
+- [2026-06-04] Added Portainer for Docker container management
+- [2026-06-04] Deployed Pi-hole as local DNS and ad blocker, configured router to use it
+- [2026-06-04] Set up .lan domains via Nginx Proxy Manager and Pi-hole local DNS
