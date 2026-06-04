@@ -1,10 +1,8 @@
 # Home Lab
-
 A personal infrastructure lab built for learning system administration, 
 networking, and self-hosted services.
 
 ## Network Overview
-
 | Device            | OS               | IP             | Role              |
 |-------------------|------------------|----------------|-------------------|
 | Titanium-2122A    | Router firmware  | 192.168.1.1    | Router / Gateway  |
@@ -12,7 +10,6 @@ networking, and self-hosted services.
 | ASUS TUF FX505DT  | TBD              | TBD            | Server            |
 | HP 15-bs0xx       | TBD              | TBD            | Server            |
 | Raspberry Pi 3B+  | TBD              | TBD            | Lightweight node  |
-
 
 ## Goals
 - Run self-hosted services across multiple machines
@@ -26,6 +23,9 @@ networking, and self-hosted services.
 - **Uptime Kuma** — service monitoring dashboard (uptime.lan)
 - **Portainer** — Docker container management (docker.lan)
 - **Pi-hole** — local DNS server and ad blocker (pi.lan)
+- **Prometheus + Node Exporter** — metrics collection
+- **Grafana** — monitoring dashboard, accessible remotely via Tailscale (grafana.lan)
+- **Tailscale** — secure remote access
 
 ## Progress Log
 - [2026-06-04] Installed Ubuntu Server on Dell G3, configured SSH access
@@ -33,8 +33,7 @@ networking, and self-hosted services.
 - [2026-06-04] Added Portainer for Docker container management
 - [2026-06-04] Deployed Pi-hole as local DNS and ad blocker, configured router to use it
 - [2026-06-04] Set up .lan domains via Nginx Proxy Manager and Pi-hole local DNS
-- [2026-06-05] Fixed Pi-hole DNS by switching to host network mode, 
-  confirmed network-wide ad blocking working
+- [2026-06-05] Fixed Pi-hole DNS by switching to host network mode, confirmed network-wide ad blocking working
 - [2026-06-05] Deployed Prometheus + Node Exporter + Grafana monitoring stack
-- [2026-06-05] Imported Node Exporter Full dashboard (ID 1860), 
-  real-time CPU/RAM/disk/network metrics visible
+- [2026-06-05] Imported Node Exporter Full dashboard (ID 1860), real-time CPU/RAM/disk/network metrics visible
+- [2026-06-05] Set up Tailscale for secure remote access, Grafana accessible remotely
