@@ -35,3 +35,6 @@ networking, and self-hosted services.
 - [2026-06-04] Set up .lan domains via Nginx Proxy Manager and Pi-hole local DNS
 - [2026-06-05] Fixed Pi-hole DNS by switching to host network mode, 
   confirmed network-wide ad blocking working
+- [2026-06-05] Deployed Prometheus + Node Exporter + Grafana monitoring stack
+- [2026-06-05] Imported Node Exporter Full dashboard (ID 1860), 
+  real-time CPU/RAM/disk/network metrics visible
