@@ -33,3 +33,5 @@ networking, and self-hosted services.
 - [2026-06-04] Added Portainer for Docker container management
 - [2026-06-04] Deployed Pi-hole as local DNS and ad blocker, configured router to use it
 - [2026-06-04] Set up .lan domains via Nginx Proxy Manager and Pi-hole local DNS
+- [2026-06-05] Fixed Pi-hole DNS by switching to host network mode, 
+  confirmed network-wide ad blocking working
