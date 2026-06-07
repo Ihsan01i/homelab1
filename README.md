@@ -7,7 +7,7 @@ networking, and self-hosted services.
 |-------------------|------------------|----------------|-------------------|
 | Titanium-2122A    | Router firmware  | 192.168.1.1    | Router / Gateway  |
 | Dell G3 3579      | Ubuntu Server    | 192.168.1.31   | Primary server    |
-| ASUS TUF FX505DT  | TBD              | TBD            | Server            |
+| ASUS TUF FX505DT  | Ubuntu Server    | 192.168.1.32   | Secondary server  |
 | HP 15-bs0xx       | TBD              | TBD            | Server            |
 | Raspberry Pi 3B+  | TBD              | TBD            | Lightweight node  |
 
@@ -27,6 +27,10 @@ networking, and self-hosted services.
 - **Grafana** — monitoring dashboard, accessible remotely via Tailscale (grafana.lan)
 - **Tailscale** — secure remote access
 
+### ASUS TUF FX505DT (192.168.1.32)
+- **Node Exporter** — metrics collection, monitored by Grafana on Dell
+- **Uptime Kuma** — monitored by Dell's Uptime Kuma
+
 ## Progress Log
 - [2026-06-04] Installed Ubuntu Server on Dell G3, configured SSH access
 - [2026-06-04] Installed Docker, deployed Nginx Proxy Manager and Uptime Kuma
@@ -37,3 +41,7 @@ networking, and self-hosted services.
 - [2026-06-05] Deployed Prometheus + Node Exporter + Grafana monitoring stack
 - [2026-06-05] Imported Node Exporter Full dashboard (ID 1860), real-time CPU/RAM/disk/network metrics visible
 - [2026-06-05] Set up Tailscale for secure remote access, Grafana accessible remotely
+- [2026-06-06] Installed Ubuntu Server on ASUS TUF, configured static IP (192.168.1.32)
+- [2026-06-06] Blacklisted nouveau GPU driver, resolved kernel error spam
+- [2026-06-06] Installed Docker on ASUS, deployed Node Exporter and Uptime Kuma
+- [2026-06-06] Added ASUS to Prometheus monitoring, visible in Grafana dashboard
