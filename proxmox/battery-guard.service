@@ -1,0 +1,6 @@
+[Unit]
+Description=Homelab Battery Guard (Emergency Suspend)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/homelab/battery-guard.sh

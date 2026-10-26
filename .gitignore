@@ -1,0 +1,5 @@
+watchdog/state/
+watchdog/watchdog.log
+/tmp/homelab-watchdog.lock
+*.env
+.env
