@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import re
 import time
@@ -197,6 +197,13 @@ def run_history_sync():
         cursor.execute("SELECT id, download_status, local_path FROM tracks WHERE source_id = ?;", (vid,))
         res = cursor.fetchone()
         
+        if not res:
+            cursor.execute('''
+                SELECT id, download_status, local_path FROM tracks
+                WHERE LOWER(TRIM(title)) = ? AND LOWER(TRIM(artist)) = ?
+                ORDER BY is_lossless DESC, id ASC LIMIT 1;
+            ''', (title.lower().strip(), artist.lower().strip()))
+            res = cursor.fetchone()
         if not res:
             cursor.execute("""
                 INSERT INTO tracks (title, artist, album, duration_ms, source_id, download_status)
