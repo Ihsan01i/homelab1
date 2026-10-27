@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import re
 import time
@@ -76,16 +76,24 @@ def download_and_ingest_track(conn, cursor, track_id: int, vid: str, title: str,
         log(f"Download error on {title}: {e}")
         return None
         
-    # Fetch authentic square cover art
-    img_data = fetch_strict_cover(primary, clean_title, album_name, vid, cov_path)
+    # Fetch authentic square cover art & MusicBrainz metadata
+    img_data, mb_meta = fetch_strict_cover(primary, clean_title, album_name, vid, cov_path)
+    if mb_meta.get("album") and (album_name == clean_title or not album_name):
+        album_name = mb_meta["album"]
     
-    # Tag file
+    # Tag file with clean metadata + MusicBrainz tags
     try:
         audio = OggOpus(dest_opus)
         audio["title"] = clean_title
         audio["artist"] = full_art
         audio["albumartist"] = primary
         audio["album"] = album_name
+        if mb_meta.get("date"):
+            audio["date"] = mb_meta["date"]
+        if mb_meta.get("genre"):
+            audio["genre"] = mb_meta["genre"]
+        if mb_meta.get("mb_track_id"):
+            audio["musicbrainz_trackid"] = mb_meta["mb_track_id"]
         if img_data:
             import base64
             pic = Picture()
@@ -106,11 +114,13 @@ def download_and_ingest_track(conn, cursor, track_id: int, vid: str, title: str,
             local_path = ?,
             file_size_bytes = ?,
             audio_format = 'OPUS',
+            album = ?,
             downloaded_at = CURRENT_TIMESTAMP
         WHERE id = ?;
-    """, (dest_opus, sz, track_id))
+    """, (dest_opus, sz, album_name, track_id))
     conn.commit()
-    log(f"Successfully ingested history track: {primary} - {clean_title} ({sz/(1024*1024):.1f} MB)")
+    source_used = mb_meta.get("cover_source", "Unknown")
+    log(f"Successfully ingested history track: {primary} - {clean_title} ({sz/(1024*1024):.1f} MB) [Cover Art: {source_used}]")
     return dest_opus
 
 def export_smart_history_playlists(conn):
@@ -193,10 +203,12 @@ def run_history_sync():
         album = item.get("album", {}).get("name") if item.get("album") else None
         duration = item.get("duration_seconds")
 
-        # Find or create track
+        # Two-Tier Deduplication
+        # Tier 1: Check exact YouTube video source ID
         cursor.execute("SELECT id, download_status, local_path FROM tracks WHERE source_id = ?;", (vid,))
         res = cursor.fetchone()
         
+        # Tier 2: Check matching title and artist across different video uploads
         if not res:
             cursor.execute('''
                 SELECT id, download_status, local_path FROM tracks
@@ -204,6 +216,7 @@ def run_history_sync():
                 ORDER BY is_lossless DESC, id ASC LIMIT 1;
             ''', (title.lower().strip(), artist.lower().strip()))
             res = cursor.fetchone()
+
         if not res:
             cursor.execute("""
                 INSERT INTO tracks (title, artist, album, duration_ms, source_id, download_status)
@@ -216,15 +229,7 @@ def run_history_sync():
         else:
             track_id, download_status, local_path = res
 
-        # Check if this exact playback event was already recorded recently
-        cursor.execute("""
-            SELECT id FROM discovery_events 
-            WHERE track_id = ? AND discovery_source = 'ytm_history'
-            ORDER BY id DESC LIMIT 1;
-        """, (track_id,))
-        recent_event = cursor.fetchone()
-        
-        # Always log to discovery_events for recommendation scoring
+        # Always log discovery event for smart playlist scoring
         cursor.execute("""
             INSERT INTO discovery_events (track_id, discovery_source, context_json, played_at)
             VALUES (?, 'ytm_history', ?, datetime('now'));
@@ -232,13 +237,13 @@ def run_history_sync():
         new_plays_logged += 1
         conn.commit()
 
-        # Download if not already completed on disk
+        # Ingest and tag if not already downloaded
         if download_status != 'completed' or not local_path or not os.path.exists(local_path):
             downloaded_path = download_and_ingest_track(conn, cursor, track_id, vid, title, artist, album)
             if downloaded_path:
                 new_tracks_downloaded += 1
 
-    # Export smart dynamic playlists
+    # Export dynamic playlists
     export_smart_history_playlists(conn)
     conn.close()
 
