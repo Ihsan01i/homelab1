@@ -1,0 +1,11 @@
+[Unit]
+Description=Music Brain YouTube Music History Sync Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/music-brain
+ExecStart=/opt/music-brain/.venv/bin/python3 /opt/music-brain/backend/app/history_intelligence_sync.py
+StandardOutput=append:/opt/music-brain/history_sync.log
+StandardError=append:/opt/music-brain/history_sync.log

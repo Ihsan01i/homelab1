@@ -3,3 +3,15 @@ watchdog/watchdog.log
 /tmp/homelab-watchdog.lock
 *.env
 .env
+
+# Music Brain Vault
+music-brain/.venv/
+music-brain/__pycache__/
+music-brain/music/
+music-brain/slskd/
+music-brain/*.db*
+music-brain/*.log
+music-brain/browser.json
+music-brain/sync_state.json
+music-brain/Takeout/
+music-brain/takeout.zip

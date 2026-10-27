@@ -1,0 +1,17 @@
+MusicFolder = "/opt/music-brain/music"
+DataFolder = "/var/lib/navidrome"
+LogLevel = "INFO"
+Port = 4533
+Address = "0.0.0.0"
+ScanSchedule = "@every 1m"
+SessionTimeout = "72h"
+EnableRateLimit = false
+ImageCacheSize = "1GB"
+CoverArtPriority = "cover.*, folder.*, embedded"
+
+[Tags.artist]
+Split = [",", ";", "/", " feat. ", " ft. "]
+
+[Scanner]
+ArtistSplitExceptions = "Tyler, The Creator, Earth, Wind & Fire, AC/DC"
+ArtistJoiner = ", "

@@ -1,0 +1,16 @@
+[Unit]
+Description=Navidrome Music Server and Streamer
+After=remote-fs.target network.target
+AssertPathExists=/var/lib/navidrome
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/navidrome
+ExecStart=/opt/navidrome/navidrome --configfile /etc/navidrome/navidrome.toml
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=Music Brain FLAC Upgrader Background Service
+After=network.target slskd.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/music-brain
+ExecStart=/opt/music-brain/.venv/bin/python3 /opt/music-brain/backend/app/flac_vault_upgrader.py
+Restart=no
+StandardOutput=append:/opt/music-brain/flac_upgrader.log
+StandardError=append:/opt/music-brain/flac_upgrader.log
+
+[Install]
+WantedBy=multi-user.target

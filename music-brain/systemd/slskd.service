@@ -1,0 +1,15 @@
+[Unit]
+Description=Soulseek Daemon (slskd)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/slskd/slskd --no-auth --no-auth --app-dir /opt/music-brain/slskd/data --config /etc/slskd/slskd.yml
+WorkingDirectory=/opt/slskd
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

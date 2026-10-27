@@ -1,0 +1,14 @@
+[Unit]
+Description=Music Brain FastAPI Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/music-brain
+ExecStart=/opt/music-brain/.venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

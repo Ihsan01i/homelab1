@@ -1,0 +1,23 @@
+soulseek:
+  username: "your_soulseek_username"
+  password: "your_soulseek_password"
+  listen_port: 50300
+
+shares:
+  directories:
+    - /opt/music-brain/music
+
+directories:
+  downloads: /opt/music-brain/slskd/downloads
+  incomplete: /opt/music-brain/slskd/incomplete
+
+web:
+  port: 5030
+  authentication:
+    enabled: false
+    api_keys:
+      - name: "music-brain"
+        key: "mb-secret-token-2026"
+
+flags:
+  no_share_scan: false

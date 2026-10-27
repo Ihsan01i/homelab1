@@ -1,6 +1,6 @@
 # Homelab1
 
-Scripts and notes for my home server. Proxmox runs on an old laptop, a Raspberry Pi watches it, and the laptop battery acts as a small UPS.
+Scripts and notes for my home server. Proxmox runs on an old laptop, a Raspberry Pi watches it, the laptop battery acts as a small UPS, and dedicated LXC containers run network services and a personal lossless music vault.
 
 ## Hardware
 
@@ -8,20 +8,27 @@ Scripts and notes for my home server. Proxmox runs on an old laptop, a Raspberry
 |---|---|---|
 | ASUS TUF FX505DT | Proxmox VE host | 192.168.1.100 |
 | LXC container on Proxmox | AdGuard Home (DNS) | 192.168.1.210 |
+| LXC container on Proxmox | Music Brain (Lossless Vault & Navidrome) | 192.168.1.102 |
 | Raspberry Pi 3B+ | Watchdog, Wake-on-LAN sender, Tailscale node | 192.168.1.201 |
 
 ## What's in the repo
 
 ```
-watchdog/   runs on the Pi
+watchdog/      runs on the Pi
   watchdog.sh
   install-watchdog.sh
   watchdog.env.example
-proxmox/    runs on the Proxmox host
+proxmox/       runs on the Proxmox host
   battery-guard.sh
   battery-guard.service
   battery-guard.timer
   install-battery-guard.sh
+music-brain/   runs on CT 102 (Music Brain LXC)
+  setup.sh
+  requirements.txt
+  backend/app/
+  config/
+  systemd/
 ```
 
 ## How it works
@@ -43,6 +50,12 @@ proxmox/    runs on the Proxmox host
   2. enables Wake-on-LAN on `nic0` with `ethtool -s nic0 wol g`,
   3. suspends the machine with `systemctl suspend`.
 - If a battery or AC reading can't be found, it assumes 100% and AC on, so it does nothing.
+
+**music-brain** (CT 102, losslessly manages, syncs and streams personal music library)
+- **8-Hour YouTube Music Intelligence Sync**: Runs automatically via `music-history-sync.timer` (00:00, 08:00, 16:00 UTC). Authenticates with Google session cookies, downloads freshly played songs in authentic high-bitrate Opus with verified square covers, and auto-refreshes dynamic playlists (`Recently Played` and `Heavy Rotation`).
+- **Strict Lossless FLAC Upgrader**: Background daemon (`music-flac-upgrader.service`) that matches clean music names on Soulseek (slskd), requiring simultaneous verification of clean song title, primary artist, and decoded duration (±3.0s) before replacing Opus. Retains 100% authentic embedded artwork.
+- **Headless Metadata Enricher**: Uses Chromaprint (`fpcalc`) and direct MusicBrainz API (`musicbrainz_fingerprinter.py`) to tag official recording IDs, release dates, and genres without touching cover art.
+- **Streaming & Storage**: Navidrome server (port 4533) streams Subsonic audio to Feishin (Windows) and BitChord (Android). Local vault is accessible via Samba share `\\192.168.1.102\music` mapped as `Z:\music`.
 
 ## Power cut sequence
 
@@ -74,9 +87,18 @@ chmod +x install-battery-guard.sh
 ./install-battery-guard.sh
 ```
 
-The Pi installer installs `wakeonlan`, `dnsutils` and `curl` with apt, then adds a cron line that runs `watchdog.sh` every minute. Running it again replaces that line instead of duplicating it.
+Music Brain (CT 102 LXC):
 
-`watchdog.env` holds the ntfy topic and is ignored by git (`.gitignore` covers `*.env`, the state folder and the log file). `watchdog.env.example` is still committed.
+```bash
+git clone https://github.com/Ihsan01i/homelab1.git
+cd homelab1/music-brain
+chmod +x setup.sh
+./setup.sh
+```
+
+Configure:
+- `/etc/slskd/slskd.yml`: Put your Soulseek username & password.
+- `/opt/music-brain/browser.json`: Put your YouTube Music session headers.
 
 ## Known limits
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Music Brain History & Intelligence Sync every 8 hours
+
+[Timer]
+OnCalendar=*-*-* 00,08,16:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
