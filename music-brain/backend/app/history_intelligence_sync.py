@@ -12,7 +12,10 @@ from mutagen.oggopus import OggOpus
 
 BASE_DIR = "/opt/music-brain"
 DB_PATH = os.path.join(BASE_DIR, "music_brain.db")
-AUTH_PATH = os.path.join(BASE_DIR, "browser.json")
+OAUTH_PATH = os.path.join(BASE_DIR, "oauth.json")
+BROWSER_PATH = os.path.join(BASE_DIR, "browser.json")
+AUTH_PATH = OAUTH_PATH if os.path.exists(OAUTH_PATH) else BROWSER_PATH
+
 LOG_PATH = os.path.join(BASE_DIR, "history_sync.log")
 MUSIC_DIR = os.path.join(BASE_DIR, "music")
 PLAYLISTS_DIR = os.path.join(MUSIC_DIR, "playlists")
@@ -173,12 +176,16 @@ def export_smart_history_playlists(conn):
 
 def run_history_sync():
     log("=== Starting 8-Hour YouTube Music History & Intelligence Sync ===")
-    if not os.path.exists(AUTH_PATH):
-        log(f"Error: {AUTH_PATH} not found!")
+    auth_file = OAUTH_PATH if os.path.exists(OAUTH_PATH) else BROWSER_PATH
+    if not os.path.exists(auth_file):
+        log(f"Error: Neither {OAUTH_PATH} nor {BROWSER_PATH} found!")
         return
 
+    auth_type = "OAuth (Permanent)" if auth_file == OAUTH_PATH else "Browser Headers"
+    log(f"Using authentication backend: {auth_type} ({auth_file})")
+
     try:
-        yt = YTMusic(AUTH_PATH)
+        yt = YTMusic(auth_file)
         history = yt.get_history()
     except Exception as e:
         log(f"Failed to fetch YouTube Music history: {e}")
@@ -204,11 +211,9 @@ def run_history_sync():
         duration = item.get("duration_seconds")
 
         # Two-Tier Deduplication
-        # Tier 1: Check exact YouTube video source ID
         cursor.execute("SELECT id, download_status, local_path FROM tracks WHERE source_id = ?;", (vid,))
         res = cursor.fetchone()
         
-        # Tier 2: Check matching title and artist across different video uploads
         if not res:
             cursor.execute('''
                 SELECT id, download_status, local_path FROM tracks
@@ -229,7 +234,7 @@ def run_history_sync():
         else:
             track_id, download_status, local_path = res
 
-        # Always log discovery event for smart playlist scoring
+        # Always log discovery event
         cursor.execute("""
             INSERT INTO discovery_events (track_id, discovery_source, context_json, played_at)
             VALUES (?, 'ytm_history', ?, datetime('now'));
