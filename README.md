@@ -8,7 +8,7 @@ Scripts and notes for my home server. Proxmox runs on an old laptop, a Raspberry
 |---|---|---|
 | ASUS TUF FX505DT | Proxmox VE host | 192.168.1.100 |
 | LXC container on Proxmox | AdGuard Home (DNS) | 192.168.1.210 |
-| LXC container on Proxmox | Music Brain (Lossless Vault & Navidrome) | 192.168.1.102 |
+| LXC container on Proxmox | Music Brain (Lossless Vault & Streaming) | 192.168.1.102 |
 | Raspberry Pi 3B+ | Watchdog, Wake-on-LAN sender, Tailscale node | 192.168.1.201 |
 
 ## What's in the repo
@@ -55,7 +55,11 @@ music-brain/   runs on CT 102 (Music Brain LXC)
 - **8-Hour YouTube Music Intelligence Sync**: Runs automatically via `music-history-sync.timer` (00:00, 08:00, 16:00 UTC). Authenticates with Google session cookies, downloads freshly played songs in authentic high-bitrate Opus with verified square covers, and auto-refreshes dynamic playlists (`Recently Played` and `Heavy Rotation`).
 - **Strict Lossless FLAC Upgrader**: Background daemon (`music-flac-upgrader.service`) that matches clean music names on Soulseek (slskd), requiring simultaneous verification of clean song title, primary artist, and decoded duration (±3.0s) before replacing Opus. Retains 100% authentic embedded artwork.
 - **Headless Metadata Enricher**: Uses Chromaprint (`fpcalc`) and direct MusicBrainz API (`musicbrainz_fingerprinter.py`) to tag official recording IDs, release dates, and genres without touching cover art.
-- **Streaming & Storage**: Navidrome server (port 4533) streams Subsonic audio to Feishin (Windows) and BitChord (Android). Local vault is accessible via Samba share `\\192.168.1.102\music` mapped as `Z:\music`.
+- **Multi-Protocol Streaming & Storage**:
+  - **Navidrome**: Subsonic API on port `4533` for Feishin (desktop) and Substreamer/Symfonium (mobile).
+  - **WebDAV (LAN HTTP)**: Runs on port `8080` (`http://192.168.1.102:8080/`).
+  - **WebDAV (Secure SSL)**: Runs on port `8443` (`https://pve.tail1374e8.ts.net:8443/`) for BitChord with Tailscale TLS certificate.
+  - **Samba (SMB)**: Network share `\\192.168.1.102\music` mapped as Windows network drive `Z:\music`.
 
 ## Power cut sequence
 
