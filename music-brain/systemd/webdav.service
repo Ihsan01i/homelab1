@@ -1,0 +1,12 @@
+[Unit]
+Description=Music Brain Secure WebDAV Server for BitChord
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rclone serve webdav /opt/music-brain/music --addr 0.0.0.0:8443 --cert /etc/ssl/tailscale/cert.crt --key /etc/ssl/tailscale/cert.key
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
