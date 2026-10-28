@@ -12,18 +12,16 @@ from mutagen.oggopus import OggOpus
 
 BASE_DIR = "/opt/music-brain"
 DB_PATH = os.path.join(BASE_DIR, "music_brain.db")
-OAUTH_PATH = os.path.join(BASE_DIR, "oauth.json")
-BROWSER_PATH = os.path.join(BASE_DIR, "browser.json")
-AUTH_PATH = OAUTH_PATH if os.path.exists(OAUTH_PATH) else BROWSER_PATH
-
+AUTH_PATH = os.path.join(BASE_DIR, "browser.json")
 LOG_PATH = os.path.join(BASE_DIR, "history_sync.log")
 MUSIC_DIR = os.path.join(BASE_DIR, "music")
 PLAYLISTS_DIR = os.path.join(MUSIC_DIR, "playlists")
 YTDLP_BIN = os.path.join(BASE_DIR, ".venv/bin/yt-dlp")
 
-# Import strict cover art helper
+# Import strict cover art helper & session refresher
 sys.path.insert(0, os.path.join(BASE_DIR, "backend/app"))
 from cover_art_helper import clean_artist_names, clean_track_title, fetch_strict_cover
+from session_refresher import refresh_session_from_profile
 
 def log(msg: str):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -176,16 +174,17 @@ def export_smart_history_playlists(conn):
 
 def run_history_sync():
     log("=== Starting 8-Hour YouTube Music History & Intelligence Sync ===")
-    auth_file = OAUTH_PATH if os.path.exists(OAUTH_PATH) else BROWSER_PATH
-    if not os.path.exists(auth_file):
-        log(f"Error: Neither {OAUTH_PATH} nor {BROWSER_PATH} found!")
+    
+    # Auto-refresh session headers from local Chromium profile
+    if refresh_session_from_profile():
+        log("Successfully refreshed session headers from local Chromium profile.")
+
+    if not os.path.exists(AUTH_PATH):
+        log(f"Error: {AUTH_PATH} not found!")
         return
 
-    auth_type = "OAuth (Permanent)" if auth_file == OAUTH_PATH else "Browser Headers"
-    log(f"Using authentication backend: {auth_type} ({auth_file})")
-
     try:
-        yt = YTMusic(auth_file)
+        yt = YTMusic(AUTH_PATH)
         history = yt.get_history()
     except Exception as e:
         log(f"Failed to fetch YouTube Music history: {e}")
