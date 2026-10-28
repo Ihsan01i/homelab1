@@ -10,8 +10,38 @@ PROFILE_DIR = os.path.join(BASE_DIR, ".browser_profile")
 COOKIES_TXT = "/tmp/cookies_extracted.txt"
 BROWSER_JSON = os.path.join(BASE_DIR, "browser.json")
 YTDLP_BIN = os.path.join(BASE_DIR, ".venv/bin/yt-dlp")
+CHROMIUM_BIN = "/usr/bin/chromium"
 
-def refresh_session_from_profile() -> bool:
+def wake_headless_browser(seconds: int = 8):
+    """
+    Spawns Headless Chromium for a few seconds to let Google client-side JavaScript
+    automatically refresh rolling session tokens (__Secure-1PSIDTS) in SQLite.
+    Zero user interaction required.
+    """
+    if not os.path.exists(PROFILE_DIR) or not os.path.exists(CHROMIUM_BIN):
+        return
+
+    cmd = [
+        CHROMIUM_BIN,
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        f"--user-data-dir={PROFILE_DIR}",
+        "https://music.youtube.com"
+    ]
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(seconds)
+        p.terminate()
+        try:
+            p.wait(timeout=5)
+        except Exception:
+            p.kill()
+    except Exception as e:
+        print(f"[SessionRefresher] Headless wake notice: {e}")
+
+def refresh_session_from_profile(wake_first: bool = True) -> bool:
     """
     Extracts live Google/YouTube session cookies from the persistent local
     Chromium profile on CT 102 and writes a fully valid browser.json with
@@ -19,6 +49,9 @@ def refresh_session_from_profile() -> bool:
     """
     if not os.path.exists(PROFILE_DIR):
         return False
+
+    if wake_first:
+        wake_headless_browser(seconds=8)
 
     cmd = [
         YTDLP_BIN,

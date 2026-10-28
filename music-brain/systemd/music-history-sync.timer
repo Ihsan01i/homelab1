@@ -1,8 +1,9 @@
 [Unit]
-Description=Run Music Brain History & Intelligence Sync every 8 hours
+Description=Run Music Brain History & Intelligence Sync daily
+PartOf=music-history-sync.service
 
 [Timer]
-OnCalendar=*-*-* 00,08,16:00:00
+OnCalendar=daily
 Persistent=true
 RandomizedDelaySec=300
 
