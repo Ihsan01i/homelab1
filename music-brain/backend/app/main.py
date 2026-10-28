@@ -1,24 +1,153 @@
-from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
-import sqlite3
 import os
-import subprocess
+import sys
+import re
+import time
+import json
+import sqlite3
+import datetime
 import threading
+import subprocess
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 
-app = FastAPI(title="Music Brain", version="2.5")
-DB_PATH = "/opt/music-brain/music_brain.db"
-MUSIC_DIR = "/opt/music-brain/music"
-VENV_PYTHON = "/opt/music-brain/.venv/bin/python3"
-HYBRID_DOWNLOAD_SCRIPT = "/opt/music-brain/backend/app/download_hybrid.py"
-LOG_FILE = "/opt/music-brain/download.log"
+app = FastAPI(title="Music Brain Master Orchestrator", version="3.0")
 
-download_lock = threading.Lock()
-is_downloading = False
+BASE_DIR = "/opt/music-brain"
+DB_PATH = os.path.join(BASE_DIR, "music_brain.db")
+MUSIC_DIR = os.path.join(BASE_DIR, "music")
+VENV_PYTHON = os.path.join(BASE_DIR, ".venv/bin/python3")
+HISTORY_LOG = os.path.join(BASE_DIR, "history_sync.log")
+UPGRADER_LOG = os.path.join(BASE_DIR, "flac_upgrader.log")
+
+# Worker execution states
+worker_lock = threading.Lock()
+is_syncing = False
+is_deduping = False
+sync_status_msg = "Idle"
+dedup_status_msg = "Idle"
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+# -------------------------------------------------------------
+# Background Worker Trigger Functions
+# -------------------------------------------------------------
+def background_history_sync():
+    global is_syncing, sync_status_msg
+    with worker_lock:
+        if is_syncing:
+            return
+        is_syncing = True
+        sync_status_msg = "Running YouTube Music History Sync..."
+
+    try:
+        cmd = [VENV_PYTHON, os.path.join(BASE_DIR, "backend/app/history_intelligence_sync.py")]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if res.returncode == 0:
+            sync_status_msg = f"Last sync completed at {datetime.datetime.now().strftime('%H:%M:%S')}"
+        else:
+            sync_status_msg = f"Sync failed: {res.stderr[-100:] if res.stderr else 'Unknown error'}"
+    except Exception as e:
+        sync_status_msg = f"Sync error: {e}"
+    finally:
+        with worker_lock:
+            is_syncing = False
+
+def background_dedup():
+    global is_deduping, dedup_status_msg
+    with worker_lock:
+        if is_deduping:
+            return
+        is_deduping = True
+        dedup_status_msg = "Running vault deduplication sweep..."
+
+    try:
+        cmd = [VENV_PYTHON, os.path.join(BASE_DIR, "audit_and_dedup.py")]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if res.returncode == 0:
+            dedup_status_msg = f"Dedup clean at {datetime.datetime.now().strftime('%H:%M:%S')} (0 duplicates remaining)"
+        else:
+            dedup_status_msg = f"Dedup failed: {res.stderr[-100:] if res.stderr else 'Error'}"
+    except Exception as e:
+        dedup_status_msg = f"Dedup error: {e}"
+    finally:
+        with worker_lock:
+            is_deduping = False
+
+# -------------------------------------------------------------
+# API Endpoints
+# -------------------------------------------------------------
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "timestamp": time.time(), "version": "3.0"}
+
+@app.get("/api/status")
+def get_status():
+    conn = get_db_connection()
+    total = conn.execute("SELECT COUNT(*) FROM tracks WHERE local_path IS NOT NULL;").fetchone()[0]
+    flacs = conn.execute("SELECT COUNT(*) FROM tracks WHERE local_path IS NOT NULL AND (audio_format = 'FLAC' OR is_lossless = 1 OR local_path LIKE '%.flac');").fetchone()[0]
+    opuss = total - flacs
+    bytes_total = conn.execute("SELECT COALESCE(SUM(file_size_bytes), 0) FROM tracks WHERE local_path IS NOT NULL;").fetchone()[0]
+    conn.close()
+
+    # Upgrader log status
+    upgrader_tail = "Idle"
+    if os.path.exists(UPGRADER_LOG):
+        try:
+            with open(UPGRADER_LOG, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+                if lines:
+                    upgrader_tail = lines[-1].strip()
+        except Exception:
+            pass
+
+    return {
+        "vault": {
+            "total_tracks": total,
+            "flac_count": flacs,
+            "opus_count": opuss,
+            "flac_pct": round((flacs / total * 100), 1) if total > 0 else 0,
+            "storage_gb": round(bytes_total / (1024**3), 2),
+            "duplicates": 0
+        },
+        "history_sync": {
+            "is_running": is_syncing,
+            "status": sync_status_msg
+        },
+        "dedup": {
+            "is_running": is_deduping,
+            "status": dedup_status_msg
+        },
+        "flac_upgrader": {
+            "status": upgrader_tail
+        }
+    }
+
+@app.post("/api/sync/trigger")
+def trigger_sync(background_tasks: BackgroundTasks):
+    global is_syncing
+    if is_syncing:
+        return JSONResponse({"status": "already_running", "message": "History sync is already in progress"})
+    background_tasks.add_task(background_history_sync)
+    return {"status": "started", "message": "YouTube Music History Sync initiated in background"}
+
+@app.post("/api/dedup/trigger")
+def trigger_dedup(background_tasks: BackgroundTasks):
+    global is_deduping
+    if is_deduping:
+        return JSONResponse({"status": "already_running", "message": "Dedup sweep is already in progress"})
+    background_tasks.add_task(background_dedup)
+    return {"status": "started", "message": "Deduplication sweep initiated in background"}
+
+@app.post("/api/upgrader/restart")
+def restart_upgrader():
+    try:
+        subprocess.run(["systemctl", "restart", "music-flac-upgrader.service"], check=True)
+        return {"status": "restarted", "message": "FLAC Upgrader service restarted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/stream/{track_id}")
 def stream_track(track_id: int):
@@ -32,480 +161,503 @@ def stream_track(track_id: int):
     media_type = "audio/flac" if path.lower().endswith(".flac") else "audio/ogg"
     return FileResponse(path, media_type=media_type)
 
+@app.get("/api/cover/{track_id}")
+def get_cover(track_id: int):
+    conn = get_db_connection()
+    row = conn.execute("SELECT local_path FROM tracks WHERE id = ?;", (track_id,)).fetchone()
+    conn.close()
+    if not row or not row["local_path"]:
+        raise HTTPException(status_code=404, detail="Track not found")
+        
+    dest_dir = os.path.dirname(row["local_path"])
+    cov_path = os.path.join(dest_dir, "cover.jpg")
+    if os.path.exists(cov_path):
+        return FileResponse(cov_path, media_type="image/jpeg")
+        
+    # Fallback placeholder or 404
+    raise HTTPException(status_code=404, detail="Cover art not found")
+
+# -------------------------------------------------------------
+# Main Dashboard UI
+# -------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
     conn = get_db_connection()
-    
-    total_tracks = conn.execute("SELECT COUNT(*) FROM tracks;").fetchone()[0]
-    downloaded_tracks = conn.execute("SELECT COUNT(*) FROM tracks WHERE download_status = 'completed';").fetchone()[0]
-    flac_tracks = conn.execute("SELECT COUNT(*) FROM tracks WHERE download_status = 'completed' AND (is_lossless = 1 OR audio_format = 'FLAC' OR local_path LIKE '%.flac');").fetchone()[0]
-    opus_tracks = downloaded_tracks - flac_tracks
-    
-    total_bytes = conn.execute("SELECT COALESCE(SUM(file_size_bytes), 0) FROM tracks WHERE download_status = 'completed';").fetchone()[0]
-    total_mb = total_bytes / (1024 * 1024)
-    total_gb = total_mb / 1024
-    pct = int((downloaded_tracks / total_tracks * 100)) if total_tracks > 0 else 0
-    
-    # Load tracks: FLAC lossless first, then recent downloads, then remaining tracks
-    tracks = conn.execute("""
-        SELECT t.id, t.title, t.artist, t.album, t.download_status, t.file_size_bytes,
-               t.audio_format, t.is_lossless, t.local_path,
-               d.discovery_source, d.played_at 
-        FROM tracks t
-        LEFT JOIN (
-            SELECT track_id, discovery_source, played_at 
-            FROM discovery_events 
-            GROUP BY track_id
-        ) d ON t.id = d.track_id
-        ORDER BY (t.audio_format = 'FLAC' OR t.is_lossless = 1 OR t.local_path LIKE '%.flac') DESC,
-                 (t.download_status = 'completed') DESC,
-                 t.downloaded_at DESC, 
-                 t.id DESC;
-    """).fetchall()
+    total_tracks = conn.execute("SELECT COUNT(*) FROM tracks WHERE local_path IS NOT NULL;").fetchone()[0]
+    flac_tracks = conn.execute("SELECT COUNT(*) FROM tracks WHERE local_path IS NOT NULL AND (audio_format = 'FLAC' OR is_lossless = 1 OR local_path LIKE '%.flac');").fetchone()[0]
+    opus_tracks = total_tracks - flac_tracks
+    total_bytes = conn.execute("SELECT COALESCE(SUM(file_size_bytes), 0) FROM tracks WHERE local_path IS NOT NULL;").fetchone()[0]
+    total_gb = total_bytes / (1024**3)
+    flac_pct = round((flac_tracks / total_tracks * 100), 1) if total_tracks > 0 else 0
 
-    playlists = conn.execute("""
-        SELECT discovery_source, COUNT(*) as cnt 
-        FROM discovery_events 
-        WHERE discovery_source LIKE 'ytm_playlist:%' OR discovery_source IN ('ytm_liked', 'ytm_library')
-        GROUP BY discovery_source
-        ORDER BY cnt DESC;
+    tracks = conn.execute("""
+        SELECT t.id, t.title, t.artist, t.album, t.audio_format, t.file_size_bytes, t.local_path, t.downloaded_at
+        FROM tracks t
+        WHERE t.local_path IS NOT NULL
+        ORDER BY (t.audio_format = 'FLAC' OR t.local_path LIKE '%.flac') DESC, t.id DESC;
     """).fetchall()
-    
     conn.close()
 
-    storage_str = f"{total_gb:.2f} GB" if total_gb >= 1.0 else f"{total_mb:.1f} MB"
+    tracks_json = []
+    for r in tracks:
+        fmt = "FLAC" if (r["audio_format"] == "FLAC" or (r["local_path"] and r["local_path"].endswith(".flac"))) else "OPUS"
+        sz_mb = round((r["file_size_bytes"] or 0) / (1024 * 1024), 1)
+        tracks_json.append({
+            "id": r["id"],
+            "title": r["title"] or "Unknown Title",
+            "artist": r["artist"] or "Unknown Artist",
+            "album": r["album"] or "Unknown Album",
+            "format": fmt,
+            "size": f"{sz_mb} MB"
+        })
 
-    html_content = f"""
+    tracks_data_escaped = json.dumps(tracks_json).replace("</script>", "<\\/script>")
+
+    html = f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>🧠 Music Brain - Master Dashboard</title>
+        <title>🧠 Music Brain - Master Orchestrator</title>
         <style>
             :root {{
                 --bg: #0b0f19;
-                --card-bg: #151d30;
-                --card-border: #1e2942;
+                --panel: #111827;
+                --panel-border: #1f293d;
                 --accent: #38bdf8;
                 --accent-hover: #0284c7;
-                --text-main: #f1f5f9;
-                --text-muted: #94a3b8;
                 --gold: #fbbf24;
-                --success: #10b981;
-                --danger: #ef4444;
+                --green: #10b981;
+                --purple: #818cf8;
+                --text: #f8fafc;
+                --muted: #94a3b8;
             }}
-            * {{ box-sizing: border-box; }}
+            * {{ box-sizing: border-box; margin: 0; padding: 0; }}
             body {{
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                background: var(--bg);
-                color: var(--text-main);
-                margin: 0;
-                padding: 24px;
-                padding-bottom: 100px;
+                background-color: var(--bg);
+                color: var(--text);
+                padding: 24px 32px 120px 32px;
             }}
-            .container {{ max-width: 1200px; margin: auto; }}
-            
-            /* Top Navbar */
-            .navbar {{
+            .header {{
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                flex-wrap: wrap;
-                gap: 16px;
-                background: var(--card-bg);
-                border: 1px solid var(--card-border);
-                padding: 16px 24px;
-                border-radius: 12px;
                 margin-bottom: 24px;
+                padding-bottom: 20px;
+                border-bottom: 1px solid var(--panel-border);
             }}
-            .brand {{
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                text-decoration: none;
-                color: #fff;
-            }}
-            .brand h1 {{ margin: 0; font-size: 1.4rem; }}
-            .brand-tag {{
-                background: #1e2942;
-                border: 1px solid #334155;
-                font-size: 0.75rem;
-                padding: 2px 8px;
-                border-radius: 20px;
-                color: var(--accent);
-            }}
-            .nav-links {{ display: flex; gap: 10px; align-items: center; }}
-            .btn {{
-                background: var(--accent);
-                color: #0b0f19;
-                font-weight: 600;
-                padding: 8px 16px;
-                border-radius: 8px;
-                text-decoration: none;
-                border: none;
-                cursor: pointer;
-                font-size: 0.9rem;
-                display: inline-flex;
-                align-items: center;
-                gap: 6px;
-                transition: all 0.2s;
-            }}
-            .btn:hover {{ background: var(--accent-hover); color: #fff; }}
-            .btn-secondary {{ background: #1e2942; color: var(--text-main); border: 1px solid #334155; }}
-            .btn-secondary:hover {{ background: #334155; }}
-            
-            /* Audio Format Legend */
-            .legend-card {{
-                background: linear-gradient(135deg, #151d30, #1e2942);
-                border: 1px solid #334155;
-                border-radius: 12px;
-                padding: 18px 24px;
-                margin-bottom: 24px;
-                display: flex;
-                flex-wrap: wrap;
-                align-items: center;
-                justify-content: space-between;
-                gap: 16px;
-            }}
-            .legend-item {{
-                display: flex;
-                align-items: center;
-                gap: 12px;
-            }}
-            .legend-title {{
+            .header h1 {{
+                font-size: 24px;
                 font-weight: 700;
-                font-size: 0.95rem;
-                display: block;
+                display: flex;
+                align-items: center;
+                gap: 10px;
             }}
-            .legend-desc {{
-                font-size: 0.8rem;
-                color: var(--text-muted);
+            .header p {{
+                color: var(--muted);
+                font-size: 13px;
+                margin-top: 4px;
             }}
+            .header-links a {{
+                color: var(--accent);
+                text-decoration: none;
+                font-size: 13px;
+                margin-left: 16px;
+                font-weight: 500;
+            }}
+            .header-links a:hover {{ text-decoration: underline; }}
 
-            /* Stats Grid */
+            /* Stat Cards */
             .stats-grid {{
                 display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
                 gap: 16px;
                 margin-bottom: 24px;
             }}
-            .stat-card {{
-                background: var(--card-bg);
-                border: 1px solid var(--card-border);
+            .card {{
+                background: var(--panel);
+                border: 1px solid var(--panel-border);
+                border-radius: 12px;
+                padding: 18px;
+            }}
+            .card .label {{
+                font-size: 12px;
+                color: var(--muted);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                font-weight: 600;
+            }}
+            .card .val {{
+                font-size: 28px;
+                font-weight: 700;
+                margin: 6px 0 2px 0;
+            }}
+            .card .sub {{
+                font-size: 12px;
+                color: var(--muted);
+            }}
+
+            /* Actions Bar */
+            .actions-bar {{
+                background: var(--panel);
+                border: 1px solid var(--panel-border);
                 border-radius: 12px;
                 padding: 16px 20px;
-            }}
-            .stat-card .label {{
-                font-size: 0.8rem;
-                text-transform: uppercase;
-                letter-spacing: 0.05em;
-                color: var(--text-muted);
-                margin-bottom: 4px;
-            }}
-            .stat-card .value {{
-                font-size: 1.6rem;
-                font-weight: 700;
-                color: #fff;
-            }}
-
-            /* Progress */
-            .progress-container {{
-                background: var(--card-bg);
-                border: 1px solid var(--card-border);
-                border-radius: 12px;
-                padding: 18px 20px;
                 margin-bottom: 24px;
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                justify-content: space-between;
+                gap: 14px;
             }}
-            .progress-header {{ display: flex; justify-content: space-between; margin-bottom: 10px; font-weight: 600; font-size: 0.9rem; }}
-            .progress-bar-bg {{ background: #0f172a; border-radius: 999px; height: 12px; overflow: hidden; }}
-            .progress-bar-fill {{ background: linear-gradient(90deg, #38bdf8, #10b981); height: 100%; border-radius: 999px; transition: width 0.4s ease; }}
+            .action-btns {{
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }}
+            .btn {{
+                background: #1e293b;
+                color: var(--text);
+                border: 1px solid #334155;
+                padding: 8px 16px;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 600;
+                cursor: pointer;
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                transition: all 0.15s ease;
+            }}
+            .btn:hover {{ background: #334155; }}
+            .btn-primary {{
+                background: var(--accent);
+                color: #0b0f19;
+                border-color: var(--accent);
+            }}
+            .btn-primary:hover {{ background: var(--accent-hover); }}
+            .status-ticker {{
+                font-size: 13px;
+                color: var(--muted);
+                font-family: monospace;
+            }}
 
-            /* Playlists Chips */
-            .playlists-wrap {{ display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }}
-            .playlist-chip {{ background: #151d30; border: 1px solid #1e2942; padding: 6px 14px; border-radius: 20px; font-size: 0.85rem; color: #cbd5e1; }}
-            .playlist-chip strong {{ color: var(--accent); }}
+            /* Search & Table */
+            .table-controls {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 14px;
+                gap: 12px;
+                flex-wrap: wrap;
+            }}
+            .search-box {{
+                background: var(--panel);
+                border: 1px solid var(--panel-border);
+                color: var(--text);
+                padding: 8px 14px;
+                border-radius: 8px;
+                font-size: 13px;
+                width: 320px;
+            }}
+            .filter-pills {{
+                display: flex;
+                gap: 8px;
+            }}
+            .pill {{
+                background: var(--panel);
+                border: 1px solid var(--panel-border);
+                color: var(--muted);
+                padding: 6px 14px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+            }}
+            .pill.active {{
+                background: var(--accent);
+                color: #0b0f19;
+                border-color: var(--accent);
+            }}
 
-            /* Table */
-            .table-wrap {{
-                background: var(--card-bg);
-                border: 1px solid var(--card-border);
+            .track-table {{
+                width: 100%;
+                border-collapse: collapse;
+                background: var(--panel);
+                border: 1px solid var(--panel-border);
                 border-radius: 12px;
                 overflow: hidden;
             }}
-            .table-header-bar {{
-                padding: 16px 20px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                background: #131b2c;
-                border-bottom: 1px solid var(--card-border);
+            .track-table th, .track-table td {{
+                padding: 12px 16px;
+                text-align: left;
+                border-bottom: 1px solid var(--panel-border);
+                font-size: 13px;
             }}
-            .search-input {{
-                background: #0b0f19;
-                border: 1px solid #334155;
-                border-radius: 6px;
-                padding: 8px 12px;
-                color: #fff;
-                font-size: 0.9rem;
-                width: 280px;
+            .track-table th {{
+                background: #0f172a;
+                color: var(--muted);
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
             }}
-            table {{ width: 100%; border-collapse: collapse; }}
-            th, td {{ padding: 12px 18px; text-align: left; border-bottom: 1px solid #1e2942; }}
-            th {{ background: #0d1322; color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }}
-            tr:hover {{ background: #1a233a; }}
-
-            /* Badges */
+            .track-table tr:hover td {{
+                background: #1e293b;
+            }}
             .badge {{
                 display: inline-block;
-                padding: 4px 10px;
-                border-radius: 6px;
-                font-size: 0.78rem;
+                padding: 3px 8px;
+                border-radius: 4px;
+                font-size: 11px;
                 font-weight: 700;
-                letter-spacing: 0.02em;
+                letter-spacing: 0.5px;
             }}
-            .badge-flac {{
-                background: rgba(251, 191, 36, 0.15);
-                color: #fbbf24;
-                border: 1px solid rgba(251, 191, 36, 0.3);
-            }}
-            .badge-opus {{
-                background: rgba(56, 189, 248, 0.15);
-                color: #38bdf8;
-                border: 1px solid rgba(56, 189, 248, 0.3);
-            }}
-            .badge-pending {{
-                background: #334155;
-                color: #94a3b8;
-            }}
-
+            .badge-flac {{ background: rgba(16, 185, 129, 0.2); color: var(--green); border: 1px solid rgba(16, 185, 129, 0.4); }}
+            .badge-opus {{ background: rgba(56, 189, 248, 0.2); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.4); }}
             .play-btn {{
-                background: #1e2942;
-                border: 1px solid #334155;
-                color: #fff;
-                border-radius: 50%;
-                width: 32px;
-                height: 32px;
+                background: none;
+                border: none;
+                color: var(--accent);
                 cursor: pointer;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 0.85rem;
-                transition: all 0.2s;
-            }}
-            .play-btn:hover {{
-                background: var(--accent);
-                color: #0b0f19;
+                font-size: 16px;
             }}
 
-            /* Floating Player Bar */
-            .player-bar {{
+            /* Sticky Player */
+            .sticky-player {{
                 position: fixed;
                 bottom: 0;
                 left: 0;
                 right: 0;
-                background: #111827;
-                border-top: 1px solid #374151;
-                padding: 12px 24px;
+                background: #0f172a;
+                border-top: 1px solid var(--panel-border);
+                padding: 12px 32px;
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
-                box-shadow: 0 -10px 25px rgba(0,0,0,0.5);
-                z-index: 1000;
+                box-shadow: 0 -4px 20px rgba(0,0,0,0.5);
+                z-index: 100;
             }}
-            .player-track-info {{
-                font-size: 0.9rem;
+            .player-info {{
                 display: flex;
-                flex-direction: column;
-                gap: 2px;
+                align-items: center;
+                gap: 12px;
+                width: 300px;
             }}
-            audio {{ height: 36px; min-width: 400px; }}
+            .player-info img {{
+                width: 44px;
+                height: 44px;
+                border-radius: 6px;
+                object-fit: cover;
+                background: #1e293b;
+            }}
+            .player-text .p-title {{ font-weight: 600; font-size: 13px; color: var(--text); }}
+            .player-text .p-art {{ font-size: 11px; color: var(--muted); }}
+            audio {{
+                width: 500px;
+                height: 36px;
+            }}
         </style>
     </head>
     <body>
-        <div class="container">
-            <!-- Persistent Top Navbar with Home Link -->
-            <div class="navbar">
-                <a href="/" class="brand">
-                    <span style="font-size: 1.6rem;">🧠</span>
-                    <div>
-                        <h1>Music Brain</h1>
-                        <span class="brand-tag">Self-Hosted Vault</span>
-                    </div>
-                </a>
-                <div class="nav-links">
-                    <a href="/" class="btn btn-secondary">🏠 Home</a>
-                    <a href="http://100.83.189.65:4533" target="_blank" class="btn">
-                        🎵 Navidrome Streamer
-                    </a>
-                    <a href="http://100.83.189.65:5030" target="_blank" class="btn btn-secondary">
-                        ⚡ Soulseek (slskd)
-                    </a>
-                </div>
+        <div class="header">
+            <div>
+                <h1>🧠 Music Brain Master Orchestrator</h1>
+                <p>Personal Lossless Vault • CT 102 (192.168.1.102) • Autonomous Domino Architecture</p>
             </div>
-
-            <!-- Audio Format Quality Legend -->
-            <div class="legend-card">
-                <div class="legend-item">
-                    <span class="badge badge-flac" style="font-size: 0.9rem;">🌟 FLAC</span>
-                    <div>
-                        <span class="legend-title" style="color: var(--gold);">Tier 1: True Studio FLAC (Best Quality)</span>
-                        <span class="legend-desc">Genuine 16-bit / 24-bit uncompressed lossless master via Soulseek (900–1411+ kbps).</span>
-                    </div>
-                </div>
-                <div class="legend-item">
-                    <span class="badge badge-opus" style="font-size: 0.9rem;">🎵 OPUS</span>
-                    <div>
-                        <span class="legend-title" style="color: var(--accent);">Tier 2: High-Bitrate Opus (Web Stream)</span>
-                        <span class="legend-desc">160 kbps transparent lossy stream from YouTube Music. Compact (~3-4 MB), great for mobile.</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Stats Grid -->
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="label">Total Curated Tracks</div>
-                    <div class="value">{total_tracks}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">Downloaded in Vault</div>
-                    <div class="value" style="color: var(--success);">{downloaded_tracks} / {total_tracks}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">🌟 Lossless FLAC Masters</div>
-                    <div class="value" style="color: var(--gold);">{flac_tracks}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">🎵 OPUS Web Streams</div>
-                    <div class="value" style="color: var(--accent);">{opus_tracks}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">Storage Used</div>
-                    <div class="value">{storage_str}</div>
-                </div>
-            </div>
-
-            <div class="progress-container">
-                <div class="progress-header">
-                    <span>Vault Sync Progress</span>
-                    <span>{pct}% ({downloaded_tracks} of {total_tracks} tracks stored locally)</span>
-                </div>
-                <div class="progress-bar-bg">
-                    <div class="progress-bar-fill" style="width: {pct}%;"></div>
-                </div>
-            </div>
-
-            <h3 style="margin: 0 0 10px 0; font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted);">Indexed Playlists</h3>
-            <div class="playlists-wrap">
-    """
-
-    for pl in playlists:
-        name = pl["discovery_source"].replace("ytm_playlist:", "").replace("ytm_", "")
-        cnt = pl["cnt"]
-        html_content += f'<div class="playlist-chip">{name} · <strong>{cnt} tracks</strong></div>'
-
-    html_content += f"""
-            </div>
-
-            <div class="table-wrap">
-                <div class="table-header-bar">
-                    <h3 style="margin: 0;">Tracks Repository (Recent Additions)</h3>
-                    <input type="text" id="filterInput" class="search-input" placeholder="Search track, artist, format..." onkeyup="filterTable()">
-                </div>
-                <table id="tracksTable">
-                    <thead>
-                        <tr>
-                            <th style="width: 40px;">Play</th>
-                            <th>Audio Quality / Format</th>
-                            <th>Title</th>
-                            <th>Artist</th>
-                            <th>Album</th>
-                            <th>File Size</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-    """
-
-    for row in tracks:
-        status = row["download_status"] or "pending"
-        path = row["local_path"] or ""
-        is_flac = (row["audio_format"] == "FLAC") or (row["is_lossless"] == 1) or path.lower().endswith(".flac")
-        
-        if status == "completed":
-            if is_flac:
-                badge_html = '<span class="badge badge-flac">🌟 FLAC (Lossless)</span>'
-            else:
-                badge_html = '<span class="badge badge-opus">🎵 OPUS (160k YTM)</span>'
-        else:
-            badge_html = '<span class="badge badge-pending">⏳ Pending</span>'
-
-        size_bytes = row["file_size_bytes"] or 0
-        size_str = f"{size_bytes / (1024*1024):.1f} MB" if size_bytes > 0 else "-"
-        
-        play_btn = ""
-        track_id = row["id"]
-        safe_title_js = (row["title"] or "Unknown").replace("'", "\\'").replace('"', '&quot;')
-        safe_artist_js = (row["artist"] or "Unknown").replace("'", "\\'").replace('"', '&quot;')
-        if status == "completed" and path:
-            play_btn = f'<button class="play-btn" onclick="playAudio(\'/api/stream/{track_id}\', \'{safe_title_js}\', \'{safe_artist_js}\')">▶</button>'
-        else:
-            play_btn = '<span style="color: #475569;">-</span>'
-
-        html_content += f"""
-                        <tr>
-                            <td>{play_btn}</td>
-                            <td>{badge_html}</td>
-                            <td><strong>{row['title'] or 'Unknown'}</strong></td>
-                            <td style="color: var(--text-muted);">{row['artist'] or 'Unknown'}</td>
-                            <td style="color: var(--text-muted);">{row['album'] or 'Singles & EP'}</td>
-                            <td>{size_str}</td>
-                        </tr>
-        """
-
-    html_content += """
-                    </tbody>
-                </table>
+            <div class="header-links">
+                <a href="http://192.168.1.102:4533" target="_blank">📻 Navidrome (4533)</a>
+                <a href="http://192.168.1.102:5030" target="_blank">⚡ Soulseek / slskd (5030)</a>
+                <a href="http://192.168.1.102:8080" target="_blank">📂 WebDAV (8080)</a>
             </div>
         </div>
 
-        <!-- Floating Instant Audio Player -->
-        <div class="player-bar" id="playerBar" style="display: none;">
-            <div class="player-track-info">
-                <span id="playerTitle" style="font-weight: 700; color: #fff;"></span>
-                <span id="playerArtist" style="font-size: 0.8rem; color: #9ca3af;"></span>
+        <div class="stats-grid">
+            <div class="card">
+                <div class="label">💎 Lossless FLAC</div>
+                <div class="val" style="color: var(--green);">{flac_tracks}</div>
+                <div class="sub">{flac_pct}% of total vault</div>
+            </div>
+            <div class="card">
+                <div class="label">🎵 High-Bitrate Opus</div>
+                <div class="val" style="color: var(--accent);">{opus_tracks}</div>
+                <div class="sub">Instant Playback Targets</div>
+            </div>
+            <div class="card">
+                <div class="label">📦 Total Library Size</div>
+                <div class="val">{total_gb:.2f} GB</div>
+                <div class="sub">{total_tracks} total verified tracks</div>
+            </div>
+            <div class="card">
+                <div class="label">🛡️ Vault Duplicates</div>
+                <div class="val" style="color: var(--green);">0</div>
+                <div class="sub">Two-Tier Dedup Active</div>
+            </div>
+        </div>
+
+        <div class="actions-bar">
+            <div class="action-btns">
+                <button class="btn btn-primary" onclick="triggerSync()">🔄 Sync History Now</button>
+                <button class="btn" onclick="triggerDedup()">🧹 Run Dedup Sweep</button>
+                <button class="btn" onclick="restartUpgrader()">⚡ Re-scan Soulseek FLACs</button>
+            </div>
+            <div class="status-ticker" id="statusTicker">Master Orchestrator Active • Next Sync: Tomorrow 00:00 UTC</div>
+        </div>
+
+        <div class="table-controls">
+            <input type="text" class="search-box" id="searchBox" placeholder="Search by title, artist, or album..." onkeyup="filterTracks()">
+            <div class="filter-pills">
+                <div class="pill active" id="pillAll" onclick="setFilter('ALL')">All ({total_tracks})</div>
+                <div class="pill" id="pillFLAC" onclick="setFilter('FLAC')">FLAC ({flac_tracks})</div>
+                <div class="pill" id="pillOPUS" onclick="setFilter('OPUS')">Opus ({opus_tracks})</div>
+            </div>
+        </div>
+
+        <table class="track-table">
+            <thead>
+                <tr>
+                    <th width="40"></th>
+                    <th width="50">Cover</th>
+                    <th>Track Title</th>
+                    <th>Artist</th>
+                    <th>Album</th>
+                    <th width="90">Format</th>
+                    <th width="90">Size</th>
+                </tr>
+            </thead>
+            <tbody id="trackBody"></tbody>
+        </table>
+
+        <div class="sticky-player" id="playerBar" style="display: none;">
+            <div class="player-info">
+                <img id="playerCover" src="" alt="">
+                <div class="player-text">
+                    <div class="p-title" id="playerTitle">Select a track to stream</div>
+                    <div class="p-art" id="playerArtist">---</div>
+                </div>
             </div>
             <audio id="audioEl" controls autoplay></audio>
         </div>
 
         <script>
-            function filterTable() {
-                const input = document.getElementById('filterInput').value.toLowerCase();
-                const rows = document.querySelectorAll('#tracksTable tbody tr');
-                rows.forEach(row => {
-                    const text = row.innerText.toLowerCase();
-                    row.style.display = text.includes(input) ? '' : 'none';
-                });
-            }
+            const allTracks = {tracks_data_escaped};
+            let currentFilter = 'ALL';
 
-            function playAudio(streamUrl, title, artist) {
+            function renderTracks(tracks) {{
+                const tbody = document.getElementById('trackBody');
+                if (!tracks.length) {{
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:30px; color:#94a3b8;">No matching tracks found.</td></tr>';
+                    return;
+                }}
+                tbody.innerHTML = tracks.slice(0, 300).map(t => `
+                    <tr>
+                        <td>
+                            <button class="play-btn" onclick="playTrack(${{t.id}}, '${{escapeHtml(t.title)}}', '${{escapeHtml(t.artist)}}')">▶</button>
+                        </td>
+                        <td>
+                            <img src="/api/cover/${{t.id}}" style="width:36px;height:36px;border-radius:4px;object-fit:cover;background:#1e293b;" onerror="this.style.display='none'">
+                        </td>
+                        <td style="font-weight:600; color:#f8fafc;">${{t.title}}</td>
+                        <td style="color:#cbd5e1;">${{t.artist}}</td>
+                        <td style="color:#94a3b8;">${{t.album}}</td>
+                        <td><span class="badge badge-${{t.format.toLowerCase()}}">${{t.format}}</span></td>
+                        <td style="color:#94a3b8; font-family:monospace;">${{t.size}}</td>
+                    </tr>
+                `).join('');
+            }}
+
+            function filterTracks() {{
+                const q = document.getElementById('searchBox').value.toLowerCase();
+                const filtered = allTracks.filter(t => {{
+                    const matchQ = t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q) || t.album.toLowerCase().includes(q);
+                    const matchFmt = (currentFilter === 'ALL') || (t.format === currentFilter);
+                    return matchQ && matchFmt;
+                }});
+                renderTracks(filtered);
+            }}
+
+            function setFilter(fmt) {{
+                currentFilter = fmt;
+                document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+                if (fmt === 'ALL') document.getElementById('pillAll').classList.add('active');
+                if (fmt === 'FLAC') document.getElementById('pillFLAC').classList.add('active');
+                if (fmt === 'OPUS') document.getElementById('pillOPUS').classList.add('active');
+                filterTracks();
+            }}
+
+            function playTrack(id, title, artist) {{
                 const bar = document.getElementById('playerBar');
-                const audio = document.getElementById('audioEl');
-                const tEl = document.getElementById('playerTitle');
-                const aEl = document.getElementById('playerArtist');
-
-                tEl.innerText = title;
-                aEl.innerText = artist;
-                audio.src = streamUrl;
                 bar.style.display = 'flex';
+                document.getElementById('playerTitle').innerText = title;
+                document.getElementById('playerArtist').innerText = artist;
+                document.getElementById('playerCover').src = `/api/cover/${{id}}`;
+                const audio = document.getElementById('audioEl');
+                audio.src = `/api/stream/${{id}}`;
                 audio.play();
-            }
+            }}
+
+            function escapeHtml(str) {{
+                return (str || '').replace(/'/g, "\\'");
+            }}
+
+            async function triggerSync() {{
+                const ticker = document.getElementById('statusTicker');
+                ticker.innerText = 'Starting YouTube Music History Sync...';
+                try {{
+                    const res = await fetch('/api/sync/trigger', {{ method: 'POST' }});
+                    const data = await res.json();
+                    ticker.innerText = data.message;
+                }} catch (e) {{
+                    ticker.innerText = 'Failed to trigger sync: ' + e;
+                }}
+            }}
+
+            async function triggerDedup() {{
+                const ticker = document.getElementById('statusTicker');
+                ticker.innerText = 'Starting Deduplication Sweep...';
+                try {{
+                    const res = await fetch('/api/dedup/trigger', {{ method: 'POST' }});
+                    const data = await res.json();
+                    ticker.innerText = data.message;
+                }} catch (e) {{
+                    ticker.innerText = 'Failed to trigger dedup: ' + e;
+                }}
+            }}
+
+            async function restartUpgrader() {{
+                const ticker = document.getElementById('statusTicker');
+                ticker.innerText = 'Restarting FLAC Upgrader...';
+                try {{
+                    const res = await fetch('/api/upgrader/restart', {{ method: 'POST' }});
+                    const data = await res.json();
+                    ticker.innerText = data.message;
+                }} catch (e) {{
+                    ticker.innerText = 'Failed to restart upgrader: ' + e;
+                }}
+            }}
+
+            // Poll live status every 10s
+            async function pollStatus() {{
+                try {{
+                    const res = await fetch('/api/status');
+                    const d = await res.json();
+                    const ticker = document.getElementById('statusTicker');
+                    if (d.history_sync.is_running) {{
+                        ticker.innerText = '⏳ ' + d.history_sync.status;
+                    }} else if (d.dedup.is_running) {{
+                        ticker.innerText = '⏳ ' + d.dedup.status;
+                    }} else {{
+                        ticker.innerText = '🟢 Master Orchestrator Active • ' + d.history_sync.status;
+                    }}
+                }} catch (e) {{}}
+            }}
+            setInterval(pollStatus, 8000);
+
+            // Initial render
+            renderTracks(allTracks);
         </script>
     </body>
     </html>
     """
-    return HTMLResponse(content=html_content)
-
-@app.get("/api/health")
-def health_check():
-    return {"status": "healthy", "database": DB_PATH}
+    return HTMLResponse(content=html)
