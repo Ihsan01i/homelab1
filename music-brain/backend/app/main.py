@@ -11,13 +11,15 @@ from typing import Optional
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 
-# Pillar 1 & 2 Intelligence & Smart Playlist Engine
+# Pillar 1, 2 & 3 Intelligence, Smart Playlists & Predictive Orbit
 try:
     from backend.app.affinity_engine import run_full_pipeline, get_db
     from backend.app.smart_playlist_engine import generate_all_smart_playlists
+    from backend.app.predictive_orbit_engine import generate_predictive_orbit
 except ImportError:
     from app.affinity_engine import run_full_pipeline, get_db
     from app.smart_playlist_engine import generate_all_smart_playlists
+    from app.predictive_orbit_engine import generate_predictive_orbit
 
 app = FastAPI(title="Music Brain Master Orchestrator", version="4.0")
 
@@ -390,6 +392,33 @@ def regenerate_playlists():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/intelligence/orbit")
+def get_predictive_orbit():
+    """Returns the current active predictive orbit recommendations."""
+    conn = get_db_connection()
+    rows = conn.execute("""
+        SELECT id, source_id, title, artist, album, duration_sec, thumb_url,
+               seed_track_title, vibe_label, flac_available, flac_peer_info, status, created_at
+        FROM predicted_orbit
+        WHERE status = 'recommended'
+        ORDER BY id ASC;
+    """).fetchall()
+    conn.close()
+
+    orbit = []
+    for r in rows:
+        d = dict(r)
+        d["peer_info"] = json.loads(d["flac_peer_info"]) if d.get("flac_peer_info") else None
+        orbit.append(d)
+
+    return {"count": len(orbit), "orbit": orbit}
+
+@app.post("/api/intelligence/orbit/refresh")
+def refresh_predictive_orbit(background_tasks: BackgroundTasks):
+    """Triggers an asynchronous refresh of the predictive discovery orbit."""
+    background_tasks.add_task(generate_predictive_orbit, True)
+    return {"status": "started", "message": "Predictive Orbit generation initiated in background"}
+
 # -------------------------------------------------------------
 # Main Dashboard UI
 # -------------------------------------------------------------
@@ -436,6 +465,31 @@ def read_root(request: Request):
         circadian_label = "🌆 Evening Flow"
     else:
         circadian_label = "🌙 Midnight Orbit"
+
+    # Predictive Orbit candidates
+    orbit_rows = conn.execute("""
+        SELECT id, source_id, title, artist, thumb_url, vibe_label, flac_available
+        FROM predicted_orbit
+        WHERE status = 'recommended'
+        ORDER BY id ASC
+        LIMIT 6;
+    """).fetchall()
+
+    orbit_cards_html = ""
+    for o in orbit_rows:
+        img_src = o["thumb_url"] or ""
+        flac_badge = '<span class="badge badge-flac" style="font-size:9px; margin-left:4px;">⚡ FLAC</span>' if o["flac_available"] else ''
+        orbit_cards_html += f"""
+        <div class="card" style="display:flex; align-items:center; gap:12px; padding:12px;">
+            <img src="{img_src}" style="width:48px;height:48px;border-radius:6px;object-fit:cover;background:#1e293b;" onerror="this.style.display='none'">
+            <div style="flex:1; min-width:0;">
+                <div style="font-weight:600; font-size:13px; color:#f8fafc; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{o['title']}">{o['title']}</div>
+                <div style="font-size:11px; color:#94a3b8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{o['artist']}</div>
+                <div style="font-size:10px; color:#c084fc; margin-top:2px;">{o['vibe_label']} {flac_badge}</div>
+            </div>
+            <a href="https://music.youtube.com/watch?v={o['source_id']}" target="_blank" class="play-btn" style="font-size:12px; text-decoration:none; padding:4px 8px; border:1px solid #38bdf8; border-radius:4px;" title="Listen on YouTube Music">▶</a>
+        </div>
+        """
 
     tracks = conn.execute("""
         SELECT t.id, t.title, t.artist, t.album, t.audio_format, t.file_size_bytes, t.local_path,
@@ -813,6 +867,19 @@ def read_root(request: Request):
             </div>
         </div>
 
+        <!-- Pillar 3 Predictive Discovery Orbit Grid -->
+        <div style="margin-bottom: 24px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px;">
+                <h3 style="font-size: 15px; font-weight: 700; color: #c084fc; display:flex; align-items:center; gap:8px;">
+                    🔮 Pillar 3: Predictive Discovery Orbit (AI Algorithmic Predictions)
+                </h3>
+                <button class="btn" style="padding: 4px 12px; font-size:11px;" onclick="triggerOrbitRefresh()">🔄 Refresh Orbit</button>
+            </div>
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px;">
+                {orbit_cards_html}
+            </div>
+        </div>
+
         <div class="stats-grid">
             <div class="card">
                 <div class="label">💎 Lossless FLAC</div>
@@ -987,6 +1054,19 @@ def read_root(request: Request):
                     setTimeout(() => location.reload(), 1500);
                 }} catch (e) {{
                     ticker.innerText = 'Failed to recompile: ' + e;
+                }}
+            }}
+
+            async function triggerOrbitRefresh() {{
+                const ticker = document.getElementById('statusTicker');
+                ticker.innerText = 'Mining YouTube Music seeds for new predictive orbit...';
+                try {{
+                    const res = await fetch('/api/intelligence/orbit/refresh', {{ method: 'POST' }});
+                    const data = await res.json();
+                    ticker.innerText = data.message;
+                    setTimeout(() => location.reload(), 3000);
+                }} catch (e) {{
+                    ticker.innerText = 'Failed to refresh orbit: ' + e;
                 }}
             }}
 
