@@ -7,10 +7,17 @@ import sqlite3
 import datetime
 import threading
 import subprocess
-from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
+from typing import Optional
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 
-app = FastAPI(title="Music Brain Master Orchestrator", version="3.0")
+# Pillar 1 Intelligence Engine
+try:
+    from backend.app.affinity_engine import run_full_pipeline, get_db
+except ImportError:
+    from app.affinity_engine import run_full_pipeline, get_db
+
+app = FastAPI(title="Music Brain Master Orchestrator", version="4.0")
 
 BASE_DIR = "/opt/music-brain"
 DB_PATH = os.path.join(BASE_DIR, "music_brain.db")
@@ -23,8 +30,10 @@ UPGRADER_LOG = os.path.join(BASE_DIR, "flac_upgrader.log")
 worker_lock = threading.Lock()
 is_syncing = False
 is_deduping = False
+is_recalculating_affinity = False
 sync_status_msg = "Idle"
 dedup_status_msg = "Idle"
+affinity_status_msg = "Idle"
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -47,6 +56,11 @@ def background_history_sync():
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if res.returncode == 0:
             sync_status_msg = f"Last sync completed at {datetime.datetime.now().strftime('%H:%M:%S')}"
+            # Automatically trigger affinity refresh upon new history intake
+            try:
+                run_full_pipeline()
+            except Exception as e:
+                print(f"[Main] Error updating affinity after sync: {e}")
         else:
             sync_status_msg = f"Sync failed: {res.stderr[-100:] if res.stderr else 'Unknown error'}"
     except Exception as e:
@@ -76,12 +90,29 @@ def background_dedup():
         with worker_lock:
             is_deduping = False
 
+def background_affinity_recalc():
+    global is_recalculating_affinity, affinity_status_msg
+    with worker_lock:
+        if is_recalculating_affinity:
+            return
+        is_recalculating_affinity = True
+        affinity_status_msg = "Recalculating half-life decay & circadian matrices..."
+
+    try:
+        res = run_full_pipeline()
+        affinity_status_msg = f"Affinity updated at {datetime.datetime.now().strftime('%H:%M:%S')} ({res.get('processed_tracks', 0)} tracks)"
+    except Exception as e:
+        affinity_status_msg = f"Affinity calculation error: {e}"
+    finally:
+        with worker_lock:
+            is_recalculating_affinity = False
+
 # -------------------------------------------------------------
-# API Endpoints
+# Core API Endpoints
 # -------------------------------------------------------------
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "timestamp": time.time(), "version": "3.0"}
+    return {"status": "ok", "timestamp": time.time(), "version": "4.0 (Pillar 1)"}
 
 @app.get("/api/status")
 def get_status():
@@ -90,9 +121,9 @@ def get_status():
     flacs = conn.execute("SELECT COUNT(*) FROM tracks WHERE local_path IS NOT NULL AND (audio_format = 'FLAC' OR is_lossless = 1 OR local_path LIKE '%.flac');").fetchone()[0]
     opuss = total - flacs
     bytes_total = conn.execute("SELECT COALESCE(SUM(file_size_bytes), 0) FROM tracks WHERE local_path IS NOT NULL;").fetchone()[0]
+    events_count = conn.execute("SELECT COUNT(*) FROM discovery_events;").fetchone()[0]
     conn.close()
 
-    # Upgrader log status
     upgrader_tail = "Idle"
     if os.path.exists(UPGRADER_LOG):
         try:
@@ -110,7 +141,8 @@ def get_status():
             "opus_count": opuss,
             "flac_pct": round((flacs / total * 100), 1) if total > 0 else 0,
             "storage_gb": round(bytes_total / (1024**3), 2),
-            "duplicates": 0
+            "duplicates": 0,
+            "discovery_events": events_count
         },
         "history_sync": {
             "is_running": is_syncing,
@@ -122,6 +154,10 @@ def get_status():
         },
         "flac_upgrader": {
             "status": upgrader_tail
+        },
+        "intelligence": {
+            "is_running": is_recalculating_affinity,
+            "status": affinity_status_msg
         }
     }
 
@@ -174,7 +210,6 @@ def get_cover(track_id: int):
     if os.path.exists(cov_path):
         return FileResponse(cov_path, media_type="image/jpeg")
         
-    # Fallback placeholder or 404
     raise HTTPException(status_code=404, detail="Cover art not found")
 
 @app.get("/api/db/download")
@@ -189,6 +224,125 @@ def download_database():
     return FileResponse(snapshot_path, filename="music_brain.db", media_type="application/vnd.sqlite3")
 
 # -------------------------------------------------------------
+# Pillar 1 Intelligence API Endpoints
+# -------------------------------------------------------------
+@app.get("/api/intelligence/summary")
+def get_intelligence_summary():
+    """Returns top-level intelligence metrics: active era, current circadian slot, top obsessions, and velocity."""
+    conn = get_db_connection()
+    
+    # Active Era
+    latest_era = conn.execute("SELECT * FROM listening_eras ORDER BY id DESC LIMIT 1;").fetchone()
+    era_data = dict(latest_era) if latest_era else None
+    if era_data:
+        era_data["dominant_artists"] = json.loads(era_data.get("dominant_artists_json") or "[]")
+        era_data["top_tracks"] = json.loads(era_data.get("top_tracks_json") or "[]")
+        era_data["bridge_tracks"] = json.loads(era_data.get("bridge_tracks_json") or "[]")
+
+    # Current Circadian Slot based on current hour
+    current_hour = datetime.datetime.now().hour
+    if 5 <= current_hour < 12:
+        current_slot = "Morning Focus"
+    elif 12 <= current_hour < 18:
+        current_slot = "Midday Drive"
+    elif 18 <= current_hour < 23:
+        current_slot = "Evening Chill"
+    else:
+        current_slot = "Midnight Orbit"
+
+    # Top Obsessions (Short-Term Decay)
+    obsessions = conn.execute("""
+        SELECT t.id, t.title, t.artist, t.album, a.affinity_score_short, a.total_plays, a.days_since_last_play
+        FROM track_affinity a
+        JOIN tracks t ON a.track_id = t.id
+        ORDER BY a.affinity_score_short DESC
+        LIMIT 5;
+    """).fetchall()
+
+    # Surging Tracks (Affinity Velocity)
+    surging = conn.execute("""
+        SELECT t.id, t.title, t.artist, t.album, a.affinity_velocity, a.affinity_score_short
+        FROM track_affinity a
+        JOIN tracks t ON a.track_id = t.id
+        WHERE a.affinity_velocity > 0
+        ORDER BY a.affinity_velocity DESC
+        LIMIT 5;
+    """).fetchall()
+
+    # Top Artists by Affinity
+    artists = conn.execute("""
+        SELECT artist_name, affinity_score_short, total_plays, vault_track_count
+        FROM artist_affinity
+        ORDER BY affinity_score_short DESC
+        LIMIT 5;
+    """).fetchall()
+
+    conn.close()
+
+    return {
+        "active_era": era_data,
+        "current_circadian_slot": current_slot,
+        "current_hour": current_hour,
+        "top_obsessions": [dict(r) for r in obsessions],
+        "surging_tracks": [dict(r) for r in surging],
+        "top_artists": [dict(r) for r in artists]
+    }
+
+@app.get("/api/intelligence/affinities")
+def get_affinities(
+    sort_by: str = Query("short", regex="^(short|long|all_time|velocity)$"),
+    limit: int = 50
+):
+    """Returns tracks ordered by mathematical affinity."""
+    col_map = {
+        "short": "affinity_score_short",
+        "long": "affinity_score_long",
+        "all_time": "affinity_score_all_time",
+        "velocity": "affinity_velocity"
+    }
+    col = col_map[sort_by]
+
+    conn = get_db_connection()
+    rows = conn.execute(f"""
+        SELECT t.id, t.title, t.artist, t.album, t.audio_format,
+               a.affinity_score_short, a.affinity_score_long, a.affinity_score_all_time,
+               a.affinity_velocity, a.total_plays, a.days_since_last_play, a.is_favorite
+        FROM track_affinity a
+        JOIN tracks t ON a.track_id = t.id
+        ORDER BY a.{col} DESC
+        LIMIT ?;
+    """, (limit,)).fetchall()
+    conn.close()
+
+    return {"sort_by": sort_by, "count": len(rows), "tracks": [dict(r) for r in rows]}
+
+@app.get("/api/intelligence/eras")
+def get_listening_eras():
+    """Returns the full chronological listening eras timeline with dominant artists and bridge tracks."""
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM listening_eras ORDER BY id ASC;").fetchall()
+    conn.close()
+
+    eras = []
+    for r in rows:
+        d = dict(r)
+        d["dominant_artists"] = json.loads(d.get("dominant_artists_json") or "[]")
+        d["top_tracks"] = json.loads(d.get("top_tracks_json") or "[]")
+        d["bridge_tracks"] = json.loads(d.get("bridge_tracks_json") or "[]")
+        eras.append(d)
+
+    return {"eras": eras}
+
+@app.post("/api/intelligence/recalculate")
+def trigger_intelligence_recalc(background_tasks: BackgroundTasks):
+    """Triggers an on-demand recalculation of half-life decay scores and circadian patterns."""
+    global is_recalculating_affinity
+    if is_recalculating_affinity:
+        return JSONResponse({"status": "already_running", "message": "Affinity calculation is already in progress"})
+    background_tasks.add_task(background_affinity_recalc)
+    return {"status": "started", "message": "Episodic Affinity calculation initiated in background"}
+
+# -------------------------------------------------------------
 # Main Dashboard UI
 # -------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
@@ -201,11 +355,48 @@ def read_root(request: Request):
     total_gb = total_bytes / (1024**3)
     flac_pct = round((flac_tracks / total_tracks * 100), 1) if total_tracks > 0 else 0
 
+    # Top Obsession
+    top_obs = conn.execute("""
+        SELECT t.id, t.title, t.artist, a.affinity_score_short, a.total_plays
+        FROM track_affinity a
+        JOIN tracks t ON a.track_id = t.id
+        ORDER BY a.affinity_score_short DESC
+        LIMIT 1;
+    """).fetchone()
+
+    # Top Surging
+    top_surge = conn.execute("""
+        SELECT t.id, t.title, t.artist, a.affinity_velocity
+        FROM track_affinity a
+        JOIN tracks t ON a.track_id = t.id
+        WHERE a.affinity_velocity > 0
+        ORDER BY a.affinity_velocity DESC
+        LIMIT 1;
+    """).fetchone()
+
+    # Active Era
+    latest_era = conn.execute("SELECT era_name FROM listening_eras ORDER BY id DESC LIMIT 1;").fetchone()
+    active_era_name = latest_era[0] if latest_era else "The Modern Golden Era (2026)"
+
+    # Circadian Slot
+    current_hour = datetime.datetime.now().hour
+    if 5 <= current_hour < 12:
+        circadian_label = "☀️ Morning Focus"
+    elif 12 <= current_hour < 18:
+        circadian_label = "⚡ Midday Energy"
+    elif 18 <= current_hour < 23:
+        circadian_label = "🌆 Evening Flow"
+    else:
+        circadian_label = "🌙 Midnight Orbit"
+
     tracks = conn.execute("""
-        SELECT t.id, t.title, t.artist, t.album, t.audio_format, t.file_size_bytes, t.local_path, t.downloaded_at
+        SELECT t.id, t.title, t.artist, t.album, t.audio_format, t.file_size_bytes, t.local_path,
+               COALESCE(a.affinity_score_short, 0.0) as aff_short,
+               COALESCE(a.affinity_velocity, 0.0) as aff_velo
         FROM tracks t
+        LEFT JOIN track_affinity a ON t.id = a.track_id
         WHERE t.local_path IS NOT NULL
-        ORDER BY (t.audio_format = 'FLAC' OR t.local_path LIKE '%.flac') DESC, t.id DESC;
+        ORDER BY a.affinity_score_short DESC, t.id DESC;
     """).fetchall()
     conn.close()
 
@@ -219,10 +410,18 @@ def read_root(request: Request):
             "artist": r["artist"] or "Unknown Artist",
             "album": r["album"] or "Unknown Album",
             "format": fmt,
-            "size": f"{sz_mb} MB"
+            "size": f"{sz_mb} MB",
+            "aff_short": round(r["aff_short"], 2),
+            "aff_velo": round(r["aff_velo"], 2)
         })
 
     tracks_data_escaped = json.dumps(tracks_json).replace("</script>", "<\\/script>")
+
+    obs_title = f"{top_obs['title']} - {top_obs['artist']}" if top_obs else "Calculating..."
+    obs_sub = f"Score: {top_obs['affinity_score_short']:.1f} • {top_obs['total_plays']} plays" if top_obs else "45-day half-life decay"
+    
+    surge_title = f"{top_surge['title']} - {top_surge['artist']}" if top_surge else "Stable Velocity"
+    surge_sub = f"+{top_surge['affinity_velocity']:.1f} velocity in 72h" if top_surge else "No sudden spikes"
 
     html = f"""
     <!DOCTYPE html>
@@ -230,7 +429,7 @@ def read_root(request: Request):
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>🧠 Music Brain - Master Orchestrator</title>
+        <title>🧠 Music Brain - Cognitive Intelligence Hub</title>
         <style>
             :root {{
                 --bg: #0b0f19;
@@ -240,7 +439,8 @@ def read_root(request: Request):
                 --accent-hover: #0284c7;
                 --gold: #fbbf24;
                 --green: #10b981;
-                --purple: #818cf8;
+                --purple: #a855f7;
+                --pink: #ec4899;
                 --text: #f8fafc;
                 --muted: #94a3b8;
             }}
@@ -285,7 +485,7 @@ def read_root(request: Request):
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
                 gap: 16px;
-                margin-bottom: 24px;
+                margin-bottom: 16px;
             }}
             .card {{
                 background: var(--panel);
@@ -301,13 +501,30 @@ def read_root(request: Request):
                 font-weight: 600;
             }}
             .card .val {{
-                font-size: 28px;
+                font-size: 24px;
                 font-weight: 700;
                 margin: 6px 0 2px 0;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }}
             .card .sub {{
                 font-size: 12px;
                 color: var(--muted);
+            }}
+
+            /* Intelligence Grid */
+            .intel-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 16px;
+                margin-bottom: 24px;
+            }}
+            .card-intel {{
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.7), rgba(15, 23, 42, 0.9));
+                border: 1px solid rgba(56, 189, 248, 0.2);
+                border-radius: 12px;
+                padding: 16px 20px;
             }}
 
             /* Actions Bar */
@@ -315,13 +532,13 @@ def read_root(request: Request):
                 background: var(--panel);
                 border: 1px solid var(--panel-border);
                 border-radius: 12px;
-                padding: 16px 20px;
+                padding: 14px 20px;
                 margin-bottom: 24px;
                 display: flex;
-                flex-wrap: wrap;
-                align-items: center;
                 justify-content: space-between;
-                gap: 14px;
+                align-items: center;
+                gap: 16px;
+                flex-wrap: wrap;
             }}
             .action-btns {{
                 display: flex;
@@ -330,23 +547,20 @@ def read_root(request: Request):
             }}
             .btn {{
                 background: #1e293b;
+                border: 1px solid var(--panel-border);
                 color: var(--text);
-                border: 1px solid #334155;
                 padding: 8px 16px;
                 border-radius: 8px;
                 font-size: 13px;
                 font-weight: 600;
                 cursor: pointer;
-                display: inline-flex;
-                align-items: center;
-                gap: 8px;
-                transition: all 0.15s ease;
+                transition: all 0.2s ease;
             }}
             .btn:hover {{ background: #334155; }}
             .btn-primary {{
                 background: var(--accent);
                 color: #0b0f19;
-                border-color: var(--accent);
+                border: none;
             }}
             .btn-primary:hover {{ background: var(--accent-hover); }}
             .status-ticker {{
@@ -376,6 +590,7 @@ def read_root(request: Request):
             .filter-pills {{
                 display: flex;
                 gap: 8px;
+                flex-wrap: wrap;
             }}
             .pill {{
                 background: var(--panel);
@@ -475,12 +690,36 @@ def read_root(request: Request):
         <div class="header">
             <div>
                 <h1>🧠 Music Brain Master Orchestrator</h1>
-                <p>Personal Lossless Vault • CT 102 (192.168.1.102) • Autonomous Domino Architecture</p>
+                <p>Personal Lossless Vault • CT 102 (192.168.1.102) • Autonomous Cognitive Architecture (Pillar 1 Active)</p>
             </div>
             <div class="header-links">
                 <a href="http://192.168.1.102:4533" target="_blank">📻 Navidrome (4533)</a>
                 <a href="http://192.168.1.102:5030" target="_blank">⚡ Soulseek / slskd (5030)</a>
                 <a href="http://192.168.1.102:8080" target="_blank">📂 WebDAV (8080)</a>
+            </div>
+        </div>
+
+        <!-- Pillar 1 Cognitive Intelligence Grid -->
+        <div class="intel-grid">
+            <div class="card-intel" style="border-left: 4px solid var(--pink);">
+                <div class="card label" style="padding:0;background:none;border:none;">🔥 Current Obsession</div>
+                <div class="card val" style="padding:0;background:none;border:none;font-size:18px;color:#f472b6;" title="{obs_title}">{obs_title}</div>
+                <div class="card sub" style="padding:0;background:none;border:none;">{obs_sub}</div>
+            </div>
+            <div class="card-intel" style="border-left: 4px solid var(--accent);">
+                <div class="card label" style="padding:0;background:none;border:none;">🚀 Surging Velocity (72h)</div>
+                <div class="card val" style="padding:0;background:none;border:none;font-size:18px;color:var(--accent);" title="{surge_title}">{surge_title}</div>
+                <div class="card sub" style="padding:0;background:none;border:none;">{surge_sub}</div>
+            </div>
+            <div class="card-intel" style="border-left: 4px solid var(--gold);">
+                <div class="card label" style="padding:0;background:none;border:none;">⏳ Active Listening Era</div>
+                <div class="card val" style="padding:0;background:none;border:none;font-size:18px;color:var(--gold);" title="{active_era_name}">{active_era_name}</div>
+                <div class="card sub" style="padding:0;background:none;border:none;">Historical Changepoint Clustering</div>
+            </div>
+            <div class="card-intel" style="border-left: 4px solid var(--purple);">
+                <div class="card label" style="padding:0;background:none;border:none;">🕒 Circadian Rhythm</div>
+                <div class="card val" style="padding:0;background:none;border:none;font-size:18px;color:var(--purple);">{circadian_label}</div>
+                <div class="card sub" style="padding:0;background:none;border:none;">Hour-of-Day Adaptive Profile</div>
             </div>
         </div>
 
@@ -510,17 +749,20 @@ def read_root(request: Request):
         <div class="actions-bar">
             <div class="action-btns">
                 <button class="btn btn-primary" onclick="triggerSync()">🔄 Sync History Now</button>
+                <button class="btn" onclick="triggerAffinityRecalc()">🧠 Recalculate Intelligence</button>
                 <button class="btn" onclick="triggerDedup()">🧹 Run Dedup Sweep</button>
                 <button class="btn" onclick="restartUpgrader()">⚡ Re-scan Soulseek FLACs</button>
                 <a href="/api/db/download" class="btn" style="text-decoration:none; display:inline-flex; align-items:center;" download>💾 Download Database</a>
             </div>
-            <div class="status-ticker" id="statusTicker">Master Orchestrator Active • Next Sync: Tomorrow 00:00 UTC</div>
+            <div class="status-ticker" id="statusTicker">Master Orchestrator Active • Episodic Memory Operational</div>
         </div>
 
         <div class="table-controls">
             <input type="text" class="search-box" id="searchBox" placeholder="Search by title, artist, or album..." onkeyup="filterTracks()">
             <div class="filter-pills">
                 <div class="pill active" id="pillAll" onclick="setFilter('ALL')">All ({total_tracks})</div>
+                <div class="pill" id="pillObsessions" onclick="setFilter('OBSESSIONS')">🔥 Top Obsessions</div>
+                <div class="pill" id="pillSurging" onclick="setFilter('SURGING')">🚀 Surging</div>
                 <div class="pill" id="pillFLAC" onclick="setFilter('FLAC')">FLAC ({flac_tracks})</div>
                 <div class="pill" id="pillOPUS" onclick="setFilter('OPUS')">Opus ({opus_tracks})</div>
             </div>
@@ -534,6 +776,7 @@ def read_root(request: Request):
                     <th>Track Title</th>
                     <th>Artist</th>
                     <th>Album</th>
+                    <th width="80">Affinity</th>
                     <th width="90">Format</th>
                     <th width="90">Size</th>
                 </tr>
@@ -559,7 +802,7 @@ def read_root(request: Request):
             function renderTracks(tracks) {{
                 const tbody = document.getElementById('trackBody');
                 if (!tracks.length) {{
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:30px; color:#94a3b8;">No matching tracks found.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:30px; color:#94a3b8;">No matching tracks found.</td></tr>';
                     return;
                 }}
                 tbody.innerHTML = tracks.slice(0, 300).map(t => `
@@ -573,6 +816,7 @@ def read_root(request: Request):
                         <td style="font-weight:600; color:#f8fafc;">${{t.title}}</td>
                         <td style="color:#cbd5e1;">${{t.artist}}</td>
                         <td style="color:#94a3b8;">${{t.album}}</td>
+                        <td style="color:#f472b6; font-weight:600; font-family:monospace;">${{t.aff_short > 0 ? t.aff_short : '-'}}</td>
                         <td><span class="badge badge-${{t.format.toLowerCase()}}">${{t.format}}</span></td>
                         <td style="color:#94a3b8; font-family:monospace;">${{t.size}}</td>
                     </tr>
@@ -583,7 +827,11 @@ def read_root(request: Request):
                 const q = document.getElementById('searchBox').value.toLowerCase();
                 const filtered = allTracks.filter(t => {{
                     const matchQ = t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q) || t.album.toLowerCase().includes(q);
-                    const matchFmt = (currentFilter === 'ALL') || (t.format === currentFilter);
+                    let matchFmt = true;
+                    if (currentFilter === 'FLAC') matchFmt = (t.format === 'FLAC');
+                    else if (currentFilter === 'OPUS') matchFmt = (t.format === 'OPUS');
+                    else if (currentFilter === 'OBSESSIONS') matchFmt = (t.aff_short >= 5.0);
+                    else if (currentFilter === 'SURGING') matchFmt = (t.aff_velo > 0.0);
                     return matchQ && matchFmt;
                 }});
                 renderTracks(filtered);
@@ -593,6 +841,8 @@ def read_root(request: Request):
                 currentFilter = fmt;
                 document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
                 if (fmt === 'ALL') document.getElementById('pillAll').classList.add('active');
+                if (fmt === 'OBSESSIONS') document.getElementById('pillObsessions').classList.add('active');
+                if (fmt === 'SURGING') document.getElementById('pillSurging').classList.add('active');
                 if (fmt === 'FLAC') document.getElementById('pillFLAC').classList.add('active');
                 if (fmt === 'OPUS') document.getElementById('pillOPUS').classList.add('active');
                 filterTracks();
@@ -625,6 +875,18 @@ def read_root(request: Request):
                 }}
             }}
 
+            async function triggerAffinityRecalc() {{
+                const ticker = document.getElementById('statusTicker');
+                ticker.innerText = 'Recalculating Episodic Memory & Affinity...';
+                try {{
+                    const res = await fetch('/api/intelligence/recalculate', {{ method: 'POST' }});
+                    const data = await res.json();
+                    ticker.innerText = data.message;
+                }} catch (e) {{
+                    ticker.innerText = 'Failed to recalculate: ' + e;
+                }}
+            }}
+
             async function triggerDedup() {{
                 const ticker = document.getElementById('statusTicker');
                 ticker.innerText = 'Starting Deduplication Sweep...';
@@ -649,7 +911,6 @@ def read_root(request: Request):
                 }}
             }}
 
-            // Poll live status every 10s
             async function pollStatus() {{
                 try {{
                     const res = await fetch('/api/status');
@@ -657,6 +918,8 @@ def read_root(request: Request):
                     const ticker = document.getElementById('statusTicker');
                     if (d.history_sync.is_running) {{
                         ticker.innerText = '⏳ ' + d.history_sync.status;
+                    }} else if (d.intelligence.is_running) {{
+                        ticker.innerText = '🧠 ' + d.intelligence.status;
                     }} else if (d.dedup.is_running) {{
                         ticker.innerText = '⏳ ' + d.dedup.status;
                     }} else {{
