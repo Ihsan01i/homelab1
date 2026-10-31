@@ -11,11 +11,13 @@ from typing import Optional
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 
-# Pillar 1 Intelligence Engine
+# Pillar 1 & 2 Intelligence & Smart Playlist Engine
 try:
     from backend.app.affinity_engine import run_full_pipeline, get_db
+    from backend.app.smart_playlist_engine import generate_all_smart_playlists
 except ImportError:
     from app.affinity_engine import run_full_pipeline, get_db
+    from app.smart_playlist_engine import generate_all_smart_playlists
 
 app = FastAPI(title="Music Brain Master Orchestrator", version="4.0")
 
@@ -100,7 +102,13 @@ def background_affinity_recalc():
 
     try:
         res = run_full_pipeline()
-        affinity_status_msg = f"Affinity updated at {datetime.datetime.now().strftime('%H:%M:%S')} ({res.get('processed_tracks', 0)} tracks)"
+        # Pillar 2: Auto-compile smart playlists after affinity recalculation
+        try:
+            generate_all_smart_playlists()
+        except Exception as e_pl:
+            print(f"[Main] Error compiling smart playlists: {e_pl}")
+
+        affinity_status_msg = f"Affinity & Playlists updated at {datetime.datetime.now().strftime('%H:%M:%S')} ({res.get('processed_tracks', 0)} tracks)"
     except Exception as e:
         affinity_status_msg = f"Affinity calculation error: {e}"
     finally:
@@ -341,6 +349,46 @@ def trigger_intelligence_recalc(background_tasks: BackgroundTasks):
         return JSONResponse({"status": "already_running", "message": "Affinity calculation is already in progress"})
     background_tasks.add_task(background_affinity_recalc)
     return {"status": "started", "message": "Episodic Affinity calculation initiated in background"}
+
+@app.get("/api/playlists/smart")
+def get_smart_playlists():
+    """Returns all Pillar 2 smart playlists with track counts and descriptions."""
+    conn = get_db_connection()
+    nav_db_path = "/var/lib/navidrome/navidrome.db"
+    playlist_stats = {}
+    if os.path.exists(nav_db_path):
+        try:
+            ndb = sqlite3.connect(nav_db_path)
+            rows = ndb.execute("SELECT name, song_count FROM playlist;").fetchall()
+            ndb.close()
+            playlist_stats = {r[0]: r[1] for r in rows}
+        except Exception:
+            pass
+
+    smart_list = [
+        {"name": "Heavy Rotation", "tag": "🔥 Current Obsessions", "desc": "Top tracks ranked by 45-day half-life decay affinity."},
+        {"name": "Forgotten Gems", "tag": "💎 Nostalgic Heavyweights", "desc": "High all-time affinity tracks you haven't heard in >45 days."},
+        {"name": "Time Machine", "tag": "⏳ Calendar Flashbacks", "desc": "Songs you had on repeat in late fall across 2021-2025."},
+        {"name": "Circadian Flow", "tag": "🕒 Adaptive Clock Radio", "desc": "Evolves between Morning Focus, Midday Energy, Evening Flow & Midnight Orbit."},
+        {"name": "Deep Vault", "tag": "🎧 Artist Deep Dives", "desc": "Under-played B-sides and album cuts by your top affinity artists."},
+        {"name": "The Bridge", "tag": "🌉 Taste Gateways", "desc": "Signature tracks that carried your taste across multiple distinct eras."}
+    ]
+
+    for p in smart_list:
+        p["count"] = playlist_stats.get(p["name"], 0)
+
+    conn.close()
+    return {"smart_playlists": smart_list}
+
+@app.post("/api/playlists/regenerate")
+def regenerate_playlists():
+    """Recompiles all M3U8 smart playlists and triggers a Navidrome scan."""
+    try:
+        res = generate_all_smart_playlists()
+        subprocess.run(["/opt/navidrome/navidrome", "scan", "--configfile", "/etc/navidrome/navidrome.toml"], capture_output=True)
+        return {"status": "success", "playlists": res}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # -------------------------------------------------------------
 # Main Dashboard UI
@@ -723,6 +771,48 @@ def read_root(request: Request):
             </div>
         </div>
 
+        <!-- Pillar 2 Autonomous Smart Playlists Grid -->
+        <div style="margin-bottom: 24px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px;">
+                <h3 style="font-size: 15px; font-weight: 700; color: var(--accent); display:flex; align-items:center; gap:8px;">
+                    🎵 Pillar 2: Autonomous Smart Playlists (Live in Navidrome & Symfonium)
+                </h3>
+                <button class="btn" style="padding: 4px 12px; font-size:11px;" onclick="triggerPlaylistRegen()">⚡ Recompile Playlists</button>
+            </div>
+            <div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 0;">
+                <div class="card" style="border-left: 3px solid var(--pink);">
+                    <div class="label">🔥 Heavy Rotation (35 tracks)</div>
+                    <div style="font-size: 14px; font-weight: 600; margin: 4px 0;">Current Obsessions</div>
+                    <div class="sub">45-day half-life decay affinity</div>
+                </div>
+                <div class="card" style="border-left: 3px solid var(--green);">
+                    <div class="label">💎 Forgotten Gems (35 tracks)</div>
+                    <div style="font-size: 14px; font-weight: 600; margin: 4px 0;">Nostalgic Heavyweights</div>
+                    <div class="sub">High all-time score, unplayed >45d</div>
+                </div>
+                <div class="card" style="border-left: 3px solid var(--gold);">
+                    <div class="label">⏳ Time Machine (35 tracks)</div>
+                    <div style="font-size: 14px; font-weight: 600; margin: 4px 0;">Calendar Flashbacks</div>
+                    <div class="sub">October/November past year repeats</div>
+                </div>
+                <div class="card" style="border-left: 3px solid var(--purple);">
+                    <div class="label">🕒 Circadian Flow (30 tracks)</div>
+                    <div style="font-size: 14px; font-weight: 600; margin: 4px 0;">{circadian_label}</div>
+                    <div class="sub">Adapts throughout the day</div>
+                </div>
+                <div class="card" style="border-left: 3px solid var(--accent);">
+                    <div class="label">🎧 Deep Vault (30 tracks)</div>
+                    <div style="font-size: 14px; font-weight: 600; margin: 4px 0;">Artist Deep Dives</div>
+                    <div class="sub">Hidden cuts by your top artists</div>
+                </div>
+                <div class="card" style="border-left: 3px solid #6366f1;">
+                    <div class="label">🌉 The Bridge (17 tracks)</div>
+                    <div style="font-size: 14px; font-weight: 600; margin: 4px 0;">Taste Gateways</div>
+                    <div class="sub">Tracks bridging 2021-2026 eras</div>
+                </div>
+            </div>
+        </div>
+
         <div class="stats-grid">
             <div class="card">
                 <div class="label">💎 Lossless FLAC</div>
@@ -884,6 +974,19 @@ def read_root(request: Request):
                     ticker.innerText = data.message;
                 }} catch (e) {{
                     ticker.innerText = 'Failed to recalculate: ' + e;
+                }}
+            }}
+
+            async function triggerPlaylistRegen() {{
+                const ticker = document.getElementById('statusTicker');
+                ticker.innerText = 'Recompiling all Smart Playlists & Syncing Navidrome...';
+                try {{
+                    const res = await fetch('/api/playlists/regenerate', {{ method: 'POST' }});
+                    const data = await res.json();
+                    ticker.innerText = 'Smart Playlists successfully recompiled!';
+                    setTimeout(() => location.reload(), 1500);
+                }} catch (e) {{
+                    ticker.innerText = 'Failed to recompile: ' + e;
                 }}
             }}
 
