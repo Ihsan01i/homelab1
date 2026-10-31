@@ -38,7 +38,7 @@ def sanitize_filename(name: str) -> str:
     cleaned = re.sub(r'\s+', " ", cleaned).strip()
     return cleaned[:80] if len(cleaned) > 80 else (cleaned or "Unknown")
 
-def download_and_ingest_track(conn, cursor, track_id: int, vid: str, title: str, artist: str, album: str) -> str:
+def download_and_ingest_track(conn, cursor, track_id: int, vid: str, title: str, artist: str, album: str, ytm_thumb_url: str = None) -> str:
     full_art, primary = clean_artist_names(artist)
     clean_title = clean_track_title(title, primary)
     
@@ -78,7 +78,7 @@ def download_and_ingest_track(conn, cursor, track_id: int, vid: str, title: str,
         return None
         
     # Fetch authentic square cover art & MusicBrainz metadata
-    img_data, mb_meta = fetch_strict_cover(primary, clean_title, album_name, vid, cov_path)
+    img_data, mb_meta = fetch_strict_cover(primary, clean_title, album_name, vid, cov_path, ytm_thumb_url)
     if mb_meta.get("album") and (album_name == clean_title or not album_name):
         album_name = mb_meta["album"]
     
@@ -173,7 +173,7 @@ def export_smart_history_playlists(conn):
         log(f"Exported 'Heavy Rotation' playlist with {len(top_tracks)} top tracks.")
 
 def run_history_sync():
-    log("=== Starting 8-Hour YouTube Music History & Intelligence Sync ===")
+    log("=== Starting YouTube Music History & Intelligence Sync ===")
     
     # Auto-refresh session headers from local Chromium profile
     if refresh_session_from_profile():
@@ -208,6 +208,9 @@ def run_history_sync():
         artist = ", ".join(artists_list) if artists_list else "Unknown Artist"
         album = item.get("album", {}).get("name") if item.get("album") else None
         duration = item.get("duration_seconds")
+        
+        thumbs = item.get("thumbnails", [])
+        ytm_thumb_url = thumbs[-1].get("url") if thumbs else None
 
         # Two-Tier Deduplication
         cursor.execute("SELECT id, download_status, local_path FROM tracks WHERE source_id = ?;", (vid,))
@@ -243,7 +246,7 @@ def run_history_sync():
 
         # Ingest and tag if not already downloaded
         if download_status != 'completed' or not local_path or not os.path.exists(local_path):
-            downloaded_path = download_and_ingest_track(conn, cursor, track_id, vid, title, artist, album)
+            downloaded_path = download_and_ingest_track(conn, cursor, track_id, vid, title, artist, album, ytm_thumb_url)
             if downloaded_path:
                 new_tracks_downloaded += 1
 

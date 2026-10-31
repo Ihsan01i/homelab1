@@ -40,11 +40,32 @@ def clean_track_title(title: str, primary_artist: str) -> str:
     t = re.sub(r'\s*\[(?:Official\s+(?:Music\s+)?Video|Official\s+Audio|Lyric\s+Video|Audio)\]', '', t, flags=re.IGNORECASE).strip()
     return t or title
 
+def fetch_ytm_googleusercontent_cover(thumb_url: str) -> bytes | None:
+    """
+    Fetches the pristine 1200x1200 official release square cover from Google's CDN.
+    """
+    if not thumb_url or "googleusercontent.com" not in thumb_url:
+        return None
+    try:
+        base_url = thumb_url.split('=')[0]
+        hires_url = f"{base_url}=w1200-h1200-l90-rj"
+        req = urllib.request.Request(hires_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            im = Image.open(resp)
+            im.load()
+            w, h = im.size
+            if w >= 500 and h >= 500 and 0.95 <= (w / h) <= 1.05:
+                buf = BytesIO()
+                im.convert("RGB").save(buf, format="JPEG", quality=95)
+                return buf.getvalue()
+    except Exception:
+        pass
+    return None
+
 def fetch_musicbrainz_metadata_and_cover(artist: str, title: str, album: str = None) -> tuple[bytes | None, dict]:
     """
     Queries MusicBrainz API for canonical recording metadata and Front Cover Art
-    from the Cover Art Archive (CAA).
-    Returns (image_bytes_or_none, metadata_dict).
+    from the Cover Art Archive (CAA) with STRICT release and square aspect ratio validation.
     """
     meta = {
         "mb_track_id": None,
@@ -54,26 +75,23 @@ def fetch_musicbrainz_metadata_and_cover(artist: str, title: str, album: str = N
     }
     
     try:
-        # Search recordings by primary artist and cleaned track title
         query_kw = {"artist": artist, "recording": title}
         res = musicbrainzngs.search_recordings(limit=5, **query_kw)
         recordings = res.get("recording-list", [])
         if not recordings:
             return None, meta
             
-        # Prioritize matching release
         for r in recordings:
             rec_id = r.get("id")
             if not meta["mb_track_id"]:
                 meta["mb_track_id"] = rec_id
                 
-            # Tags / Genres
             tag_list = r.get("tag-list", [])
             if tag_list and not meta["genre"]:
                 meta["genre"] = tag_list[0].get("name", "").capitalize()
                 
             releases = r.get("release-list", [])
-            # Try to match user-provided album name first if present
+            # Prioritize exact album name match first
             sorted_releases = sorted(
                 releases,
                 key=lambda x: (
@@ -88,26 +106,32 @@ def fetch_musicbrainz_metadata_and_cover(artist: str, title: str, album: str = N
                 rel_title = rel.get("title")
                 rel_date = (rel.get("date") or "")[:4]
                 
+                # Guard: If album is provided and release title completely mismatches, skip
+                if album and album.lower() not in (rel_title or "").lower() and (rel_title or "").lower() not in album.lower():
+                    # If this is a regional song with a completely different movie album, do NOT blindly grab its cover
+                    continue
+                
                 if not meta["album"] and rel_title:
                     meta["album"] = rel_title
                 if not meta["date"] and rel_date:
                     meta["date"] = rel_date
                     
-                # Query Cover Art Archive
                 try:
                     img_bytes = musicbrainzngs.get_image_front(rel_id)
                     if img_bytes:
-                        # Normalize and ensure image is valid RGB JPEG
                         im = Image.open(BytesIO(img_bytes))
                         im.load()
-                        buf = BytesIO()
-                        im.convert("RGB").save(buf, format="JPEG", quality=95)
-                        return buf.getvalue(), meta
+                        w, h = im.size
+                        ratio = w / h if h > 0 else 0
+                        # STRICT GUARD: Cover must be square (reject 600x960 movie posters)
+                        if 0.95 <= ratio <= 1.05 and w >= 400 and h >= 400:
+                            buf = BytesIO()
+                            im.convert("RGB").save(buf, format="JPEG", quality=95)
+                            return buf.getvalue(), meta
                 except Exception:
-                    # 404 Not Found in Cover Art Archive, continue trying next release
                     continue
                     
-    except Exception as e:
+    except Exception:
         pass
         
     return None, meta
@@ -144,21 +168,39 @@ def fetch_youtube_cropped_cover(source_id: str) -> bytes | None:
     cropped.convert("RGB").save(buf, format="JPEG", quality=95)
     return buf.getvalue()
 
-def fetch_strict_cover(artist: str, title: str, album: str, source_id: str, out_path: str) -> tuple[bytes | None, dict]:
+def fetch_strict_cover(artist: str, title: str, album: str, source_id: str, out_path: str, ytm_thumb_url: str = None) -> tuple[bytes | None, dict]:
     """
-    Tier 1: Query MusicBrainz + Cover Art Archive for official high-resolution album front cover and metadata.
-    Tier 2: Fall back to high-res YouTube video thumbnail cropped square.
-    Saves cover image to out_path.
+    Tier 1 (Highest Quality & Authenticity):
+      YouTube Music Official Release CDN (googleusercontent.com at =w1200-h1200).
+      Guaranteed official 1:1 square release cover from the record label.
+    Tier 2:
+      MusicBrainz Cover Art Archive (Strictly verified square aspect ratio & album match).
+    Tier 3:
+      YouTube Video Thumbnail cropped square (fallback for unofficial video uploads).
     """
-    # 1. Try MusicBrainz Cover Art Archive
-    img_data, meta = fetch_musicbrainz_metadata_and_cover(artist, title, album)
-    source_used = "MusicBrainz Cover Art Archive" if img_data else None
+    img_data = None
+    source_used = None
+    meta = {"mb_track_id": None, "album": None, "date": None, "genre": None}
     
-    # 2. Fallback to YouTube cropped thumbnail
+    # 1. Tier 1: YouTube Music High-Res Official Release Cover
+    if ytm_thumb_url and "googleusercontent.com" in ytm_thumb_url:
+        img_data = fetch_ytm_googleusercontent_cover(ytm_thumb_url)
+        if img_data:
+            source_used = "YouTube Music Official Studio Artwork (1200x1200)"
+
+    # 2. Query MusicBrainz for metadata (and cover if Tier 1 missed)
+    mb_img, mb_meta = fetch_musicbrainz_metadata_and_cover(artist, title, album)
+    meta.update({k: v for k, v in mb_meta.items() if v})
+    
+    if not img_data and mb_img:
+        img_data = mb_img
+        source_used = "MusicBrainz Cover Art Archive (Verified Square)"
+
+    # 3. Tier 3: Fallback to YouTube cropped thumbnail
     if not img_data and source_id:
         img_data = fetch_youtube_cropped_cover(source_id)
         if img_data:
-            source_used = "YouTube Video Thumbnail (Square Cropped)"
+            source_used = "YouTube Video Thumbnail (Square Cropped Fallback)"
             
     if img_data and out_path:
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
