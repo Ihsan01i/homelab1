@@ -413,11 +413,33 @@ def get_predictive_orbit():
 
     return {"count": len(orbit), "orbit": orbit}
 
+def full_orbit_refresh_and_ingest():
+    generate_predictive_orbit(True)
+    try:
+        from backend.app.autonomous_discovery_ingest import run_discovery_ingestion
+    except ImportError:
+        from app.autonomous_discovery_ingest import run_discovery_ingestion
+    run_discovery_ingestion(10)
+
 @app.post("/api/intelligence/orbit/refresh")
-def refresh_predictive_orbit(background_tasks: BackgroundTasks):
-    """Triggers an asynchronous refresh of the predictive discovery orbit."""
-    background_tasks.add_task(generate_predictive_orbit, True)
-    return {"status": "started", "message": "Predictive Orbit generation initiated in background"}
+def refresh_predictive_orbit(background_tasks: BackgroundTasks, auto_ingest: bool = True):
+    """Triggers an asynchronous refresh of the predictive discovery orbit and ingests into Navidrome."""
+    if auto_ingest:
+        background_tasks.add_task(full_orbit_refresh_and_ingest)
+        return {"status": "started", "message": "Predictive Orbit generation & autonomous vault ingestion initiated in background"}
+    else:
+        background_tasks.add_task(generate_predictive_orbit, True)
+        return {"status": "started", "message": "Predictive Orbit generation initiated in background"}
+
+@app.post("/api/intelligence/orbit/ingest")
+def ingest_predictive_orbit(background_tasks: BackgroundTasks, limit: int = 10):
+    """Autonomously downloads predicted orbit tracks into vault, tags metadata & updates Navidrome."""
+    try:
+        from backend.app.autonomous_discovery_ingest import run_discovery_ingestion
+    except ImportError:
+        from app.autonomous_discovery_ingest import run_discovery_ingestion
+    background_tasks.add_task(run_discovery_ingestion, limit)
+    return {"status": "started", "message": f"Autonomous ingestion of up to {limit} orbit tracks into vault/Navidrome initiated."}
 
 # -------------------------------------------------------------
 # Main Dashboard UI
@@ -873,7 +895,10 @@ def read_root(request: Request):
                 <h3 style="font-size: 15px; font-weight: 700; color: #c084fc; display:flex; align-items:center; gap:8px;">
                     🔮 Pillar 3: Predictive Discovery Orbit (AI Algorithmic Predictions)
                 </h3>
-                <button class="btn" style="padding: 4px 12px; font-size:11px;" onclick="triggerOrbitRefresh()">🔄 Refresh Orbit</button>
+                <div style="display:flex; gap:8px;">
+                    <button class="btn" style="padding: 4px 12px; font-size:11px;" onclick="triggerOrbitRefresh()">🔄 Refresh Orbit</button>
+                    <button class="btn" style="padding: 4px 12px; font-size:11px; background:#9333ea;" onclick="triggerOrbitIngest()">⚡ Ingest to Navidrome</button>
+                </div>
             </div>
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px;">
                 {orbit_cards_html}
