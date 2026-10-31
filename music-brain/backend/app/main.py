@@ -177,6 +177,17 @@ def get_cover(track_id: int):
     # Fallback placeholder or 404
     raise HTTPException(status_code=404, detail="Cover art not found")
 
+@app.get("/api/db/download")
+def download_database():
+    snapshot_path = "/tmp/music_brain_snapshot.db"
+    src = sqlite3.connect(DB_PATH)
+    dst = sqlite3.connect(snapshot_path)
+    with dst:
+        src.backup(dst)
+    dst.close()
+    src.close()
+    return FileResponse(snapshot_path, filename="music_brain.db", media_type="application/vnd.sqlite3")
+
 # -------------------------------------------------------------
 # Main Dashboard UI
 # -------------------------------------------------------------
@@ -501,6 +512,7 @@ def read_root(request: Request):
                 <button class="btn btn-primary" onclick="triggerSync()">🔄 Sync History Now</button>
                 <button class="btn" onclick="triggerDedup()">🧹 Run Dedup Sweep</button>
                 <button class="btn" onclick="restartUpgrader()">⚡ Re-scan Soulseek FLACs</button>
+                <a href="/api/db/download" class="btn" style="text-decoration:none; display:inline-flex; align-items:center;" download>💾 Download Database</a>
             </div>
             <div class="status-ticker" id="statusTicker">Master Orchestrator Active • Next Sync: Tomorrow 00:00 UTC</div>
         </div>
