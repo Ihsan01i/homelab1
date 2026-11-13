@@ -33,7 +33,7 @@ def log(msg: str):
 def normalize_text(text: str) -> str:
     if not text:
         return ""
-    return unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+    return unicodedata.normalize('NFKC', text)
 
 def sanitize_filename(name: str) -> str:
     cleaned = re.sub(r'[\\/*?:"<>|]', "", name or "Unknown")
@@ -55,29 +55,34 @@ def extract_music_name(raw_title: str, raw_artist: str) -> str:
     t = (raw_title or "").strip()
     a = (raw_artist or "").strip()
     
-    # 1. Strip repeated artist prefix (e.g. "Artist - Title", "Artist: Title")
-    parts = [p.strip() for p in re.split(r'[,&]| feat\.? | ft\.? ', a, flags=re.IGNORECASE) if p.strip()]
-    for art in [a] + parts:
+    # 1. Strip repeated artist prefix
+    art_candidates = [a] + [p.strip() for p in re.split(r'[,&／|]|\s+feat\.?\s+|\s+ft\.?\s+|\s+', a, flags=re.IGNORECASE) if len(p.strip()) > 1]
+    for art in art_candidates:
         if not art:
             continue
-        pat = re.compile(rf'^{re.escape(art)}\s*[-:?_]\s*', re.IGNORECASE)
+        pat = re.compile(rf'^{re.escape(art)}\s*[-:?_／|~〜]?\s*', re.IGNORECASE)
         while pat.search(t):
             t = pat.sub('', t).strip()
             
     # 2. Strip bracketed / parenthetical video & audio noise
     bracket_noise = [
-        r'\s*[\(\[](?:official\s+(?:music\s+)?video|official\s+audio|lyric\s+video|lyrics|audio|visualizer|mv|hd|4k|color\s+coded|romaji|sub\s+espanol|extended\s+version|video)[\)\]]',
-        r'\s*[\(\[](?:from|soundtrack|ost)\s+.*?[\)\]]',
-        r'\s*[\(\[](?:feat\.?|ft\.?)\s+.*?[\)\]]'
+        r'\s*[\(\[【（「『]?(?:official\s+(?:music\s+)?video|official\s+audio|lyric\s+video|lyrics|audio|visualizer|mv|hd|4k|color\s+coded|romaji|sub\s+espanol|extended\s+version|music\s+video)[\)\]】）」』]?',
+        r'\s*[\(\[【（](?:from|soundtrack|ost)\s+.*?[\)\]】）]',
+        r'\s*[\(\[【（](?:feat\.?|ft\.?)\s+.*?[\)\]】）]'
     ]
     for bn in bracket_noise:
         t = re.sub(bn, '', t, flags=re.IGNORECASE).strip()
     
     # 3. Strip trailing noise words or separator suffixes
-    t = re.sub(r'\s*-\s*(?:official\s+(?:music\s+)?video|official\s+audio|lyrics|audio|mv)\b.*$', '', t, flags=re.IGNORECASE).strip()
+    t = re.sub(r'\s*[-|/／]\s*(?:official\s+(?:music\s+)?video|official\s+audio|lyrics|audio|mv|music\s+video).*$', '', t, flags=re.IGNORECASE).strip()
     t = re.sub(r'\s*\|\s*.*$', '', t).strip()
-    t = re.sub(r'\b(?:official\s+music\s+video|official\s+video|official\s+audio|lyric\s+video)\b', '', t, flags=re.IGNORECASE).strip()
-    t = re.sub(r'["\']', '', t).strip()
+    t = re.sub(r'(?:official\s+music\s+video|official\s+video|official\s+audio|lyric\s+video|music\s+video)', '', t, flags=re.IGNORECASE).strip()
+    t = re.sub(r'^[『「【\[\(](.*?)[』」】\]\)]$', r'', t).strip()
+    t = re.sub(r'^[/:_\s-]+', '', t).strip()
+    t = re.sub(r'\s*\(\s*\)', '', t).strip()
+    t = re.sub(r'\s*\[\s*\]', '', t).strip()
+    t = re.sub(r'["\x27]', '', t).strip()
+    t = re.sub(r'\s+', ' ', t).strip()
     return t or raw_title
 
 def slskd_req(endpoint: str, method: str = "GET", data=None):
@@ -119,13 +124,21 @@ def search_strict_flac_candidates(primary_artist: str, music_name: str, target_s
     norm_artist = normalize_text(primary_artist).lower()
     norm_music = normalize_text(music_name).lower()
     
-    q_art = re.sub(r'[^a-zA-Z0-9\s]', ' ', norm_artist).strip()
-    q_music = re.sub(r'[^a-zA-Z0-9\s]', ' ', norm_music).strip()
+    q_art = re.sub(r'[^\w\s]', ' ', norm_artist, flags=re.UNICODE).strip()
+    q_music = re.sub(r'[^\w\s]', ' ', norm_music, flags=re.UNICODE).strip()
     query = f"{q_art} {q_music}".strip()
     
-    a_words = list(dict.fromkeys([w for w in q_art.split() if len(w) > 2])) or q_art.split()
-    stop_words = {"the", "and", "feat", "with", "from", "for", "soundtrack", "version"}
-    m_words = list(dict.fromkeys([w for w in q_music.split() if len(w) > 1 and w not in stop_words])) or q_music.split()
+    stop_words = {
+        "the", "and", "feat", "with", "from", "for", "soundtrack", "version", "ver",
+        "music", "video", "official", "audio", "lyric", "lyrics", "mv", "hd", "4k", "ost"
+    }
+    a_words = list(dict.fromkeys([w for w in q_art.split() if len(w) > 1 and w not in stop_words])) or [w for w in q_art.split() if len(w) > 1]
+    m_words = list(dict.fromkeys([w for w in q_music.split() if len(w) > 1 and w not in stop_words]))
+    
+    # CRITICAL GUARD: Abort if no distinctive music title tokens exist or query is too short
+    if not m_words or len(query.strip()) < 3:
+        log(f"Aborting Soulseek search: query '{query}' has no distinctive music title tokens.")
+        return []
     
     start = slskd_req("/searches", method="POST", data={"searchText": query})
     if not start or "id" not in start:

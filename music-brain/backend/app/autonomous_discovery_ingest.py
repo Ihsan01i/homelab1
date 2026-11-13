@@ -68,6 +68,20 @@ def ingest_candidate(c: dict) -> bool:
     dest_opus = os.path.join(track_dir, f"{safe_art} - {safe_title}.opus")
     cov_path = os.path.join(track_dir, "cover.jpg")
 
+    # Dedup Guard: Check if song already exists in vault
+    try:
+        from dedup_guard import check_vault_duplicate
+        vault_dup = check_vault_duplicate(artist, title)
+        if vault_dup:
+            print(f"[DiscoveryIngest] '{title}' by '{artist}' already exists in vault at {vault_dup['path']}. Skipping duplicate download.")
+            db = get_db()
+            with db:
+                db.execute("UPDATE predicted_orbit SET status = 'in_vault' WHERE id = ?", (cand_id,))
+            db.close()
+            return True
+    except Exception as e:
+        print(f"[DiscoveryIngest] Dedup check notice: {e}")
+
     # Download if not already present
     if not os.path.exists(dest_opus) or os.path.getsize(dest_opus) < 40000:
         print(f"[DiscoveryIngest] Downloading '{title}' by {artist} (ID: {vid})...")

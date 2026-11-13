@@ -3,15 +3,19 @@ DataFolder = "/var/lib/navidrome"
 LogLevel = "INFO"
 Port = 4533
 Address = "0.0.0.0"
-ScanSchedule = "@every 1m"
+ScanInterval = "1m"
 SessionTimeout = "72h"
-EnableRateLimit = false
 ImageCacheSize = "1GB"
 CoverArtPriority = "cover.*, folder.*, embedded"
 
-[Tags.artist]
+[Tags.Artist]
 Split = [",", ";", "/", " feat. ", " ft. "]
 
 [Scanner]
-ArtistSplitExceptions = "Tyler, The Creator, Earth, Wind & Fire, AC/DC"
+ArtistSplitExceptions = ["Tyler, The Creator", "Earth, Wind & Fire", "AC/DC"]
 ArtistJoiner = ", "
+
+[LastFM]
+ApiKey = "b25b959554ed76058ac220b7b2e0a026"
+Secret = "425b557143ec69ddfc1047037143b400"
+Enabled = true

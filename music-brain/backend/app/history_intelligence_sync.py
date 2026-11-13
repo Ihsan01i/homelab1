@@ -21,6 +21,7 @@ YTDLP_BIN = os.path.join(BASE_DIR, ".venv/bin/yt-dlp")
 # Import strict cover art helper & session refresher
 sys.path.insert(0, os.path.join(BASE_DIR, "backend/app"))
 from cover_art_helper import clean_artist_names, clean_track_title, fetch_strict_cover
+from dedup_guard import check_vault_duplicate, check_db_duplicate
 from session_refresher import refresh_session_from_profile
 
 def log(msg: str):
@@ -212,16 +213,36 @@ def run_history_sync():
         thumbs = item.get("thumbnails", [])
         ytm_thumb_url = thumbs[-1].get("url") if thumbs else None
 
-        # Two-Tier Deduplication
+        # Multi-Tier Intelligent Deduplication Guard
         cursor.execute("SELECT id, download_status, local_path FROM tracks WHERE source_id = ?;", (vid,))
         res = cursor.fetchone()
         
         if not res:
-            cursor.execute('''
-                SELECT id, download_status, local_path FROM tracks
-                WHERE LOWER(TRIM(title)) = ? AND LOWER(TRIM(artist)) = ?
-                ORDER BY is_lossless DESC, id ASC LIMIT 1;
-            ''', (title.lower().strip(), artist.lower().strip()))
+            # Check dedup_guard against Navidrome vault (primary artist + clean title + duration match)
+            vault_dup = check_vault_duplicate(artist, title, duration)
+            if vault_dup:
+                v_path = vault_dup['path']
+                cursor.execute("SELECT id, download_status, local_path FROM tracks WHERE local_path LIKE ?;", (f"%{v_path}%",))
+                res = cursor.fetchone()
+                if not res:
+                    full_v_path = os.path.join(MUSIC_DIR, v_path)
+                    insert_q = "INSERT INTO tracks (title, artist, album, duration_ms, source_id, download_status, local_path, audio_format, is_lossless) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?);"
+                    cursor.execute(insert_q, (vault_dup['title'], vault_dup['artist'], vault_dup['album'], int(vault_dup['duration'] * 1000) if vault_dup['duration'] else None, vid, full_v_path, vault_dup['suffix'].upper(), 1 if vault_dup['suffix'].lower() == 'flac' else 0))
+                    track_id = cursor.lastrowid
+                    conn.commit()
+                    res = (track_id, 'completed', full_v_path)
+                log(f"[DedupGuard] Blocked duplicate download: '{title}' matched existing vault track {v_path}")
+
+        if not res:
+            # Check dedup_guard against music_brain DB tracks
+            db_dup = check_db_duplicate(cursor, artist, title, duration)
+            if db_dup:
+                res = (db_dup['id'], db_dup.get('download_status', 'completed'), db_dup.get('local_path'))
+                log(f"[DedupGuard] Blocked duplicate download: '{title}' matched existing DB track ID {db_dup['id']}")
+
+        if not res:
+            sel_q = "SELECT id, download_status, local_path FROM tracks WHERE LOWER(TRIM(title)) = ? AND LOWER(TRIM(artist)) = ? ORDER BY is_lossless DESC, id ASC LIMIT 1;"
+            cursor.execute(sel_q, (title.lower().strip(), artist.lower().strip()))
             res = cursor.fetchone()
 
         if not res:

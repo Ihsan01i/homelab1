@@ -15,13 +15,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 try:
     from backend.app.affinity_engine import run_full_pipeline, get_db
     from backend.app.smart_playlist_engine import generate_all_smart_playlists
-    from backend.app.predictive_orbit_engine import generate_predictive_orbit
 except ImportError:
     from app.affinity_engine import run_full_pipeline, get_db
     from app.smart_playlist_engine import generate_all_smart_playlists
-    from app.predictive_orbit_engine import generate_predictive_orbit
 
 app = FastAPI(title="Music Brain Master Orchestrator", version="4.0")
+
+
+
 
 BASE_DIR = "/opt/music-brain"
 DB_PATH = os.path.join(BASE_DIR, "music_brain.db")
@@ -414,7 +415,6 @@ def get_predictive_orbit():
     return {"count": len(orbit), "orbit": orbit}
 
 def full_orbit_refresh_and_ingest():
-    generate_predictive_orbit(True)
     try:
         from backend.app.autonomous_discovery_ingest import run_discovery_ingestion
     except ImportError:
@@ -422,17 +422,16 @@ def full_orbit_refresh_and_ingest():
     run_discovery_ingestion(10)
 
 @app.post("/api/intelligence/orbit/refresh")
-def refresh_predictive_orbit(background_tasks: BackgroundTasks, auto_ingest: bool = True):
+def refresh_predictive_orbit(background_tasks: BackgroundTasks, auto_ingest: bool = False):
     """Triggers an asynchronous refresh of the predictive discovery orbit and ingests into Navidrome."""
     if auto_ingest:
         background_tasks.add_task(full_orbit_refresh_and_ingest)
         return {"status": "started", "message": "Predictive Orbit generation & autonomous vault ingestion initiated in background"}
     else:
-        background_tasks.add_task(generate_predictive_orbit, True)
         return {"status": "started", "message": "Predictive Orbit generation initiated in background"}
 
 @app.post("/api/intelligence/orbit/ingest")
-def ingest_predictive_orbit(background_tasks: BackgroundTasks, limit: int = 10):
+def ingest_predictive_orbit(background_tasks: BackgroundTasks, limit: int = 5):
     """Autonomously downloads predicted orbit tracks into vault, tags metadata & updates Navidrome."""
     try:
         from backend.app.autonomous_discovery_ingest import run_discovery_ingestion
@@ -442,6 +441,28 @@ def ingest_predictive_orbit(background_tasks: BackgroundTasks, limit: int = 10):
     return {"status": "started", "message": f"Autonomous ingestion of up to {limit} orbit tracks into vault/Navidrome initiated."}
 
 # -------------------------------------------------------------
+
+@app.get("/api/logs")
+def get_system_logs(limit: int = 50, module: Optional[str] = None):
+    """Returns recent system, deduplication, and ingestion logs."""
+    conn = get_db_connection()
+    if module and module != "all":
+        rows = conn.execute("""
+            SELECT id, timestamp, module, level, message, details_json
+            FROM system_logs
+            WHERE module = ?
+            ORDER BY id DESC LIMIT ?
+        """, (module.upper(), limit)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT id, timestamp, module, level, message, details_json
+            FROM system_logs
+            ORDER BY id DESC LIMIT ?
+        """, (limit,)).fetchall()
+    logs = [dict(r) for r in rows]
+    conn.close()
+    return {"logs": logs}
+
 # Main Dashboard UI
 # -------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
@@ -965,6 +986,30 @@ def read_root(request: Request):
             </thead>
             <tbody id="trackBody"></tbody>
         </table>
+
+        <!-- Live System & Vault Activity Log Console -->
+        <div style="margin-top: 32px; background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 20px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <div style="width:10px; height:10px; border-radius:50%; background:#10b981; box-shadow:0 0 10px #10b981;"></div>
+                    <span style="font-weight:700; font-size:15px; color:#f8fafc; letter-spacing:0.5px;">LIVE SYSTEM & VAULT AUDIT LOGS</span>
+                    <span id="logCountBadge" style="font-size:11px; background:#1e293b; color:#94a3b8; padding:2px 8px; border-radius:999px;">0 logs</span>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <div class="pill active" id="logPillAll" onclick="setLogFilter('all')" style="font-size:11px; padding:4px 10px;">All</div>
+                    <div class="pill" id="logPillDedup" onclick="setLogFilter('DEDUP_GUARD')" style="font-size:11px; padding:4px 10px;">🛡️ Ingestion Guard</div>
+                    <div class="pill" id="logPillAudit" onclick="setLogFilter('VAULT_AUDIT')" style="font-size:11px; padding:4px 10px;">🔍 Deduplication</div>
+                    <div class="pill" id="logPillAudio" onclick="setLogFilter('VAULT_AUDIO')" style="font-size:11px; padding:4px 10px;">🎵 Audio Quality</div>
+                    <div class="pill" id="logPillSync" onclick="setLogFilter('HISTORY_SYNC')" style="font-size:11px; padding:4px 10px;">⚡ History Sync</div>
+                    <button onclick="fetchLogs()" class="btn-ctrl" style="font-size:11px; padding:4px 10px; border:1px solid #334155; background:#1e293b; color:#f8fafc; border-radius:6px; cursor:pointer;">↻ Refresh</button>
+                </div>
+            </div>
+            
+            <div id="logConsoleContainer" style="background:#020617; border:1px solid #1e293b; border-radius:8px; padding:14px; font-family:'JetBrains Mono', 'Fira Code', monospace; font-size:12px; height:240px; overflow-y:auto; display:flex; flex-direction:column; gap:8px;">
+                <div style="color:#64748b; text-align:center; padding:20px;">Loading real-time logs...</div>
+            </div>
+        </div>
+
 
         <div class="sticky-player" id="playerBar" style="display: none;">
             <div class="player-info">
