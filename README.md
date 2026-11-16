@@ -58,7 +58,7 @@ music-brain/   runs on CT 102 (Music Brain LXC)
 - **Multi-Protocol Streaming & Storage**:
   - **Navidrome**: Subsonic API on port `4533` for Feishin (desktop) and Substreamer/Symfonium (mobile).
   - **WebDAV (LAN HTTP)**: Runs on port `8080` (`http://192.168.1.102:8080/`).
-  - **WebDAV (Secure SSL)**: Runs on port `8443` (`https://pve.tail1374e8.ts.net:8443/`) for BitChord with Tailscale TLS certificate.
+  - **WebDAV (Secure SSL)**: Runs on port `8443` (`https://pve.tail1374e8.ts.net:8443/`) with Tailscale TLS certificate.
   - **Samba (SMB)**: Network share `\\192.168.1.102\music` mapped as Windows network drive `Z:\music`.
 
 ## Power cut sequence
