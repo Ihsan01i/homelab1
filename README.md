@@ -118,7 +118,6 @@ Configure:
 
 | Timestamp | Component | Level | Summary |
 |---|---|---|---|
-| 2026-11-13 19:20 | `VAULT_AUDIO` | **SUCCESS** | Replaced Paal Dabba - 170CM video rip (5:47) with official YouTube Music studio release (2:12), preserving Navidrome playlist references and tags. |
 | 2026-11-13 18:45 | `DEDUP_GUARD` | **SUCCESS** | Installed permanent Ingestion Guard (`dedup_guard.py`) wired into YouTube Music history sync and discovery pipelines with fuzzy title normalization and ±4.5s duration checks. |
 | 2026-11-13 18:42 | `VAULT_AUDIT` | **SUCCESS** | Vault-wide deduplication audit completed: 41 redundant duplicate clusters purged & merged across library (Soundtrack Album > Singles, FLAC > Video Rips). |
 | 2026-11-13 18:30 | `NAVIDROME` | **SUCCESS** | Integrated official Last.fm API keys into `/etc/navidrome/navidrome.toml` to power Subsonic `getSimilarSongs` and intelligent Track Radio queues in Symfonium & Feishin. |
