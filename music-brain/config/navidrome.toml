@@ -16,6 +16,6 @@ ArtistSplitExceptions = ["Tyler, The Creator", "Earth, Wind & Fire", "AC/DC"]
 ArtistJoiner = ", "
 
 [LastFM]
-ApiKey = "b25b959554ed76058ac220b7b2e0a026"
-Secret = "425b557143ec69ddfc1047037143b400"
-Enabled = true
+ApiKey = "YOUR_LASTFM_API_KEY"
+Secret = "YOUR_LASTFM_SECRET"
+Enabled = false
