@@ -84,15 +84,13 @@ cp "$TARGET_DIR"/systemd/*.timer /etc/systemd/system/ 2>/dev/null || true
 systemctl daemon-reload
 
 echo "[7/7] Enabling core services..."
-systemctl enable navidrome slskd music-brain music-history-sync.timer webdav webdav-http
-systemctl restart navidrome slskd music-brain music-history-sync.timer webdav webdav-http
+systemctl enable navidrome slskd music-brain music-history-sync.timer
+systemctl restart navidrome slskd music-brain music-history-sync.timer
 
 echo "======================================================"
 echo "    Music Brain Vault Infrastructure Setup Complete   "
 echo "======================================================"
 echo "Navidrome:   http://<ip>:4533"
-echo "WebDAV HTTP: http://<ip>:8080"
-echo "WebDAV SSL:  https://<ip>:8443"
 echo "slskd:       http://<ip>:5030"
 echo "Dashboard:   http://<ip>:8000"
 echo "======================================================"

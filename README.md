@@ -23,6 +23,14 @@ proxmox/       runs on the Proxmox host
   battery-guard.service
   battery-guard.timer
   install-battery-guard.sh
+  homelab-heartbeat.sh
+  homelab-heartbeat.cron
+  install-heartbeat.sh
+  heartbeat.env.example
+  homelab-heartbeat.sh
+  homelab-heartbeat.cron
+  install-heartbeat.sh
+  heartbeat.env.example
 music-brain/   runs on CT 102 (Music Brain LXC)
   setup.sh
   requirements.txt
@@ -114,12 +122,82 @@ Configure:
 
 ---
 
-## 📜 System Operations & Vault Activity Log
+## 🚨 Healthchecks.io Dead Man's Switch (Proxmox Alert System)
+
+An external, out-of-band monitoring agent runs directly on the Proxmox VE host (`pve`) every 2 minutes via cron. It collects real-time system metrics and sends an authenticated ping to [healthchecks.io](https://healthchecks.io).
+
+### How It Works
+
+1. **Telemetry Harvest:** Every 120 seconds, `homelab-heartbeat.sh` gathers:
+   - Host uptime, RAM usage, and root disk consumption.
+   - Container states for CT 100 (Beeper bridge), CT 101 (AdGuard Home), and CT 102 (Music Brain).
+   - Tailscale ping reachability to the Raspberry Pi watchdog node (`100.114.251.120`).
+2. **Ping Dispatch:** Dispatches an HTTP POST payload to Healthchecks.io using a private check URL stored in `/etc/homelab/heartbeat.env` (`chmod 600`).
+3. **Outage Alert Routing:** If the homelab loses power, internet connectivity, or freezes:
+   - Healthchecks.io detects the missing check-in.
+   - After the grace period (3 minutes), Healthchecks dispatches an automated webhook alert directly to a dedicated Matrix room.
+   - Beeper delivers the push notification immediately to mobile devices.
+4. **Recovery Notification:** When power or network restores and the first heartbeat arrives, Healthchecks sends an instant recovery notification.
+
+### Secure Installation
+
+```bash
+cd proxmox/
+sudo chmod +x install-heartbeat.sh
+sudo ./install-heartbeat.sh
+```
+
+Edit `/etc/homelab/heartbeat.env` (kept strictly out of source control with `chmod 600`) to supply your private Healthchecks.io check URL:
+```bash
+HC_URL="https://hc-ping.com/YOUR-CHECK-UUID-HERE"
+```
+
+---
+
+## 📜 Homelab Infrastructure Operations & Maintenance Log
 
 | Timestamp | Component | Level | Summary |
 |---|---|---|---|
-| 2026-11-13 18:45 | `DEDUP_GUARD` | **SUCCESS** | Installed permanent Ingestion Guard (`dedup_guard.py`) wired into YouTube Music history sync and discovery pipelines with fuzzy title normalization and ±4.5s duration checks. |
-| 2026-11-13 18:42 | `VAULT_AUDIT` | **SUCCESS** | Vault-wide deduplication audit completed: 41 redundant duplicate clusters purged & merged across library (Soundtrack Album > Singles, FLAC > Video Rips). |
-| 2026-11-13 18:30 | `NAVIDROME` | **SUCCESS** | Integrated official Last.fm API keys into `/etc/navidrome/navidrome.toml` to power Subsonic `getSimilarSongs` and intelligent Track Radio queues in Symfonium & Feishin. |
-| 2026-11-13 18:25 | `WEB_DASHBOARD`| **FEATURE** | Added real-time Live System & Vault Activity Log Console (`#systemLogConsole`, `/api/logs`) with dynamic category filters. |
-| 2026-11-13 18:20 | `CLEANUP` | **MAINTENANCE** | Retired legacy BitChord and old predictive orbit scripts. Synchronized library to exactly 923 pristine tracks (284 FLAC, 639 Opus). |
+
+## 🚨 Healthchecks.io Dead Man's Switch (Proxmox Alert System)
+
+An external, out-of-band monitoring agent runs directly on the Proxmox VE host (`pve`) every 2 minutes via cron. It collects real-time system metrics and sends an authenticated ping to [healthchecks.io](https://healthchecks.io).
+
+### How It Works
+
+1. **Telemetry Harvest:** Every 120 seconds, `homelab-heartbeat.sh` gathers:
+   - Host uptime, RAM usage, and root disk consumption.
+   - Container states for CT 100 (Beeper bridge), CT 101 (AdGuard Home), and CT 102 (Music Brain).
+   - Tailscale ping reachability to the Raspberry Pi watchdog node (`100.114.251.120`).
+2. **Ping Dispatch:** Dispatches an HTTP POST payload to Healthchecks.io using a private check URL stored in `/etc/homelab/heartbeat.env` (`chmod 600`).
+3. **Outage Alert Routing:** If the homelab loses power, internet connectivity, or freezes:
+   - Healthchecks.io detects the missing check-in.
+   - After the grace period (3 minutes), Healthchecks dispatches an automated webhook alert directly to a dedicated Matrix room.
+   - Beeper delivers the push notification immediately to mobile devices.
+4. **Recovery Notification:** When power or network restores and the first heartbeat arrives, Healthchecks sends an instant recovery notification.
+
+### Secure Installation
+
+```bash
+cd proxmox/
+sudo chmod +x install-heartbeat.sh
+sudo ./install-heartbeat.sh
+```
+
+Edit `/etc/homelab/heartbeat.env` (kept strictly out of source control with `chmod 600`) to supply your private Healthchecks.io check URL:
+```bash
+HC_URL="https://hc-ping.com/YOUR-CHECK-UUID-HERE"
+```
+
+---
+
+## 📜 Homelab Infrastructure Operations & Maintenance Log
+
+| Timestamp | Component | Level | Summary |
+|---|---|---|---|
+| 2026-11-17 18:05 | `HEALTHCHECKS` | **SUCCESS** | Deployed Dead Man's Switch alert system (`homelab-heartbeat.sh`) on Proxmox host with secured `/etc/homelab/heartbeat.env` (`chmod 600`) and 2m cron interval. Webhook tied to Matrix/Beeper. |
+| 2026-11-16 15:30 | `PVE_GPU` | **DIAGNOSTIC** | Investigated discrete GPU hardware lock on ASUS TUF FX505DT: identified `nouveau` D3cold-to-D0 PCIe bridge (`00:01.1`) timeout bug and Asus EC fan runaway failsafe (2,800 RPM). |
+| 2026-11-13 19:25 | `CONTAINERS` | **MAINTENANCE** | Reconciled LXC state across cluster: verified AdGuard Home (CT 101), Beeper bridge (CT 100), and Music Brain (CT 102) container health and static network assignments. |
+| 2026-11-13 14:55 | `POWER_FAILSAFE`| **VERIFIED** | Real-world power outage test: Healthchecks.io detected missing ping at 14:50 and alerted via Beeper within 3m. Laptop battery guard maintained graceful state. |
+| 2026-11-03 10:15 | `WATCHDOG` | **SUCCESS** | Raspberry Pi 3B+ watchdog initialized: probes Proxmox HTTPS and AdGuard DNS, equipped with Wake-on-LAN magic packet dispatcher on `nic0`. |
+| 2026-10-27 23:05 | `BATTERY_GUARD`| **SUCCESS** | Installed `battery-guard.sh` systemd service on Proxmox host: monitors AC state, auto-suspends at ≤40% battery discharge to prevent battery wear, arms WoL. |

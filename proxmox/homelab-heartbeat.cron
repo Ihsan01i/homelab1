@@ -1,0 +1,2 @@
+# Proxmox Homelab Heartbeat / Dead Man's Switch (Every 2 minutes)
+*/2 * * * * root /usr/local/bin/homelab-heartbeat.sh >/dev/null 2>&1
